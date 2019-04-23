@@ -56,6 +56,7 @@ import java.security.MessageDigest;
 import java.text.MessageFormat;
 import java.util.Arrays;
 
+import org.eclipse.jgit.errors.CorruptObjectException;
 import org.eclipse.jgit.internal.JGitText;
 import org.eclipse.jgit.lib.AnyObjectId;
 import org.eclipse.jgit.lib.Constants;
@@ -190,6 +191,16 @@ public class DirCacheEntry {
 			md.update((byte) 0);
 		}
 
+		try {
+			checkPath(path);
+		} catch (InvalidPathException e) {
+			CorruptObjectException p =
+				new CorruptObjectException(e.getMessage());
+			if (e.getCause() != null)
+				p.initCause(e.getCause());
+			throw p;
+		}
+
 		// Index records are padded out to the next 8 byte alignment
 		// for historical reasons related to how C Git read the files.
 		//
@@ -203,7 +214,6 @@ public class DirCacheEntry {
 
 		if (mightBeRacilyClean(smudge_s, smudge_ns))
 			smudgeRacilyClean();
-
 	}
 
 	/**
@@ -217,7 +227,7 @@ public class DirCacheEntry {
 	 *             or DirCache file.
 	 */
 	public DirCacheEntry(final String newPath) {
-		this(Constants.encode(newPath));
+		this(Constants.encode(newPath), STAGE_0);
 	}
 
 	/**
@@ -254,7 +264,7 @@ public class DirCacheEntry {
 	/**
 	 * Create an empty entry at the specified stage.
 	 *
-	 * @param newPath
+	 * @param path
 	 *            name of the cache entry, in the standard encoding.
 	 * @param stage
 	 *            the stage index of the new entry.
@@ -265,16 +275,16 @@ public class DirCacheEntry {
 	 *             range 0..3, inclusive.
 	 */
 	@SuppressWarnings("boxing")
-	public DirCacheEntry(final byte[] newPath, final int stage) {
-		if (!isValidPath(newPath))
-			throw new InvalidPathException(toString(newPath));
+	public DirCacheEntry(byte[] path, final int stage) {
+		checkPath(path);
 		if (stage < 0 || 3 < stage)
-			throw new IllegalArgumentException(MessageFormat.format(JGitText.get().invalidStageForPath
-					, stage, toString(newPath)));
+			throw new IllegalArgumentException(MessageFormat.format(
+					JGitText.get().invalidStageForPath,
+					stage, toString(path)));
 
 		info = new byte[INFO_LEN];
 		infoOffset = 0;
-		path = newPath;
+		this.path = path;
 
 		int flags = ((stage & 0x3) << 12);
 		if (path.length < NAME_MASK)
@@ -282,6 +292,23 @@ public class DirCacheEntry {
 		else
 			flags |= NAME_MASK;
 		NB.encodeInt16(info, infoOffset + P_FLAGS, flags);
+	}
+
+	/**
+	 * Duplicate DirCacheEntry with same path and copied info.
+	 * <p>
+	 * The same path buffer is reused (avoiding copying), however a new info
+	 * buffer is created and its contents are copied.
+	 *
+	 * @param src
+	 *            entry to clone.
+	 * @since 4.2
+	 */
+	public DirCacheEntry(DirCacheEntry src) {
+		path = src.path;
+		info = new byte[INFO_LEN];
+		infoOffset = 0;
+		System.arraycopy(src.info, src.infoOffset, info, 0, INFO_LEN);
 	}
 
 	void write(final OutputStream os) throws IOException {
@@ -447,6 +474,16 @@ public class DirCacheEntry {
 	}
 
 	/**
+	 * Returns whether this entry is in the fully-merged stage (0).
+	 *
+	 * @return true if this entry is merged
+	 * @since 2.2
+	 */
+	public boolean isMerged() {
+		return getStage() == STAGE_0;
+	}
+
+	/**
 	 * Obtain the raw {@link FileMode} bits for this entry.
 	 *
 	 * @return mode bits for the entry.
@@ -479,10 +516,14 @@ public class DirCacheEntry {
 		switch (mode.getBits() & FileMode.TYPE_MASK) {
 		case FileMode.TYPE_MISSING:
 		case FileMode.TYPE_TREE:
-			throw new IllegalArgumentException(MessageFormat.format(JGitText.get().invalidModeForPath
-					, mode, getPathString()));
+			throw new IllegalArgumentException(MessageFormat.format(
+					JGitText.get().invalidModeForPath, mode, getPathString()));
 		}
 		NB.encodeInt32(info, infoOffset + P_MODE, mode.getBits());
+	}
+
+	void setFileMode(int mode) {
+		NB.encodeInt32(info, infoOffset + P_MODE, mode);
 	}
 
 	/**
@@ -538,7 +579,7 @@ public class DirCacheEntry {
 	 * <p>
 	 * Note that this is the length of the file in the working directory, which
 	 * may differ from the size of the decompressed blob if work tree filters
-	 * are being used, such as LF<->CRLF conversion.
+	 * are being used, such as LF&lt;-&gt;CRLF conversion.
 	 * <p>
 	 * Note also that for very large files, this is the size of the on-disk file
 	 * truncated to 32 bits, i.e. modulo 4294967296. If that value is larger
@@ -625,8 +666,19 @@ public class DirCacheEntry {
 	}
 
 	/**
+	 * Get a copy of the entry's raw path bytes.
+	 *
+	 * @return raw path bytes.
+	 * @since 3.4
+	 */
+	public byte[] getRawPath() {
+		return path.clone();
+	}
+
+	/**
 	 * Use for debugging only !
 	 */
+	@SuppressWarnings("nls")
 	@Override
 	public String toString() {
 		return getFileMode() + " " + getLength() + " " + getLastModified()
@@ -700,38 +752,18 @@ public class DirCacheEntry {
 			return 0;
 	}
 
-	private static String toString(final byte[] path) {
-		return Constants.CHARSET.decode(ByteBuffer.wrap(path)).toString();
+	private static void checkPath(byte[] path) {
+		try {
+			SystemReader.getInstance().checkPath(path);
+		} catch (CorruptObjectException e) {
+			InvalidPathException p = new InvalidPathException(toString(path));
+			p.initCause(e);
+			throw p;
+		}
 	}
 
-	static boolean isValidPath(final byte[] path) {
-		if (path.length == 0)
-			return false; // empty path is not permitted.
-
-		boolean componentHasChars = false;
-		for (final byte c : path) {
-			switch (c) {
-			case 0:
-				return false; // NUL is never allowed within the path.
-
-			case '/':
-				if (componentHasChars)
-					componentHasChars = false;
-				else
-					return false;
-				break;
-			case '\\':
-			case ':':
-				// Tree's never have a backslash in them, not even on Windows
-				// but even there we regard it as an invalid path
-				if (SystemReader.getInstance().isWindows())
-					return false;
-				//$FALL-THROUGH$
-			default:
-				componentHasChars = true;
-			}
-		}
-		return componentHasChars;
+	static String toString(final byte[] path) {
+		return Constants.CHARSET.decode(ByteBuffer.wrap(path)).toString();
 	}
 
 	static int getMaximumInfoLength(boolean extended) {

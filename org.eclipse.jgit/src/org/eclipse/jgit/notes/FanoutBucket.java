@@ -140,6 +140,7 @@ class FanoutBucket extends InMemoryNoteBucket {
 
 			private Iterator<Note> itr;
 
+			@Override
 			public boolean hasNext() {
 				if (itr != null && itr.hasNext())
 					return true;
@@ -164,6 +165,7 @@ class FanoutBucket extends InMemoryNoteBucket {
 				return false;
 			}
 
+			@Override
 			public Note next() {
 				if (hasNext())
 					return itr.next();
@@ -171,6 +173,7 @@ class FanoutBucket extends InMemoryNoteBucket {
 					throw new NoSuchElementException();
 			}
 
+			@Override
 			public void remove() {
 				throw new UnsupportedOperationException();
 			}
@@ -259,9 +262,10 @@ class FanoutBucket extends InMemoryNoteBucket {
 		return inserter.insert(build(true, inserter));
 	}
 
+	@Override
 	ObjectId getTreeId() {
-		try {
-			return new ObjectInserter.Formatter().idFor(build(false, null));
+		try (ObjectInserter.Formatter f = new ObjectInserter.Formatter()) {
+			return f.idFor(build(false, null));
 		} catch (IOException e) {
 			// should never happen as we are not inserting
 			throw new RuntimeException(e);

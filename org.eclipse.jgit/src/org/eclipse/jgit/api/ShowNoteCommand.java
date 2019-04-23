@@ -74,13 +74,13 @@ public class ShowNoteCommand extends GitCommand<Note> {
 		super(repo);
 	}
 
+	@Override
 	public Note call() throws GitAPIException {
 		checkCallable();
-		RevWalk walk = new RevWalk(repo);
 		NoteMap map = NoteMap.newEmptyMap();
 		RevCommit notesCommit = null;
-		try {
-			Ref ref = repo.getRef(notesRef);
+		try (RevWalk walk = new RevWalk(repo)) {
+			Ref ref = repo.exactRef(notesRef);
 			// if we have a notes ref, use it
 			if (ref != null) {
 				notesCommit = walk.parseCommit(ref.getObjectId());
@@ -89,8 +89,6 @@ public class ShowNoteCommand extends GitCommand<Note> {
 			return map.getNote(id);
 		} catch (IOException e) {
 			throw new JGitInternalException(e.getMessage(), e);
-		} finally {
-			walk.release();
 		}
 	}
 

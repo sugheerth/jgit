@@ -71,35 +71,35 @@ import org.eclipse.jgit.util.TemporaryBuffer;
 
 /** Patch header describing an action for a single file path. */
 public class FileHeader extends DiffEntry {
-	private static final byte[] OLD_MODE = encodeASCII("old mode ");
+	private static final byte[] OLD_MODE = encodeASCII("old mode "); //$NON-NLS-1$
 
-	private static final byte[] NEW_MODE = encodeASCII("new mode ");
+	private static final byte[] NEW_MODE = encodeASCII("new mode "); //$NON-NLS-1$
 
-	static final byte[] DELETED_FILE_MODE = encodeASCII("deleted file mode ");
+	static final byte[] DELETED_FILE_MODE = encodeASCII("deleted file mode "); //$NON-NLS-1$
 
-	static final byte[] NEW_FILE_MODE = encodeASCII("new file mode ");
+	static final byte[] NEW_FILE_MODE = encodeASCII("new file mode "); //$NON-NLS-1$
 
-	private static final byte[] COPY_FROM = encodeASCII("copy from ");
+	private static final byte[] COPY_FROM = encodeASCII("copy from "); //$NON-NLS-1$
 
-	private static final byte[] COPY_TO = encodeASCII("copy to ");
+	private static final byte[] COPY_TO = encodeASCII("copy to "); //$NON-NLS-1$
 
-	private static final byte[] RENAME_OLD = encodeASCII("rename old ");
+	private static final byte[] RENAME_OLD = encodeASCII("rename old "); //$NON-NLS-1$
 
-	private static final byte[] RENAME_NEW = encodeASCII("rename new ");
+	private static final byte[] RENAME_NEW = encodeASCII("rename new "); //$NON-NLS-1$
 
-	private static final byte[] RENAME_FROM = encodeASCII("rename from ");
+	private static final byte[] RENAME_FROM = encodeASCII("rename from "); //$NON-NLS-1$
 
-	private static final byte[] RENAME_TO = encodeASCII("rename to ");
+	private static final byte[] RENAME_TO = encodeASCII("rename to "); //$NON-NLS-1$
 
-	private static final byte[] SIMILARITY_INDEX = encodeASCII("similarity index ");
+	private static final byte[] SIMILARITY_INDEX = encodeASCII("similarity index "); //$NON-NLS-1$
 
-	private static final byte[] DISSIMILARITY_INDEX = encodeASCII("dissimilarity index ");
+	private static final byte[] DISSIMILARITY_INDEX = encodeASCII("dissimilarity index "); //$NON-NLS-1$
 
-	static final byte[] INDEX = encodeASCII("index ");
+	static final byte[] INDEX = encodeASCII("index "); //$NON-NLS-1$
 
-	static final byte[] OLD_NAME = encodeASCII("--- ");
+	static final byte[] OLD_NAME = encodeASCII("--- "); //$NON-NLS-1$
 
-	static final byte[] NEW_NAME = encodeASCII("+++ ");
+	static final byte[] NEW_NAME = encodeASCII("+++ "); //$NON-NLS-1$
 
 	/** Type of patch used by this file. */
 	public static enum PatchType {
@@ -267,7 +267,7 @@ public class FileHeader extends DiffEntry {
 		final TemporaryBuffer[] tmp = new TemporaryBuffer[getParentCount() + 1];
 		try {
 			for (int i = 0; i < tmp.length; i++)
-				tmp[i] = new TemporaryBuffer.LocalFile();
+				tmp[i] = new TemporaryBuffer.Heap(Integer.MAX_VALUE);
 			for (final HunkHeader h : getHunks())
 				h.extractFileLines(tmp);
 
@@ -281,11 +281,6 @@ public class FileHeader extends DiffEntry {
 			return r;
 		} catch (IOException ioe) {
 			throw new RuntimeException(JGitText.get().cannotConvertScriptToText, ioe);
-		} finally {
-			for (final TemporaryBuffer b : tmp) {
-				if (b != null)
-					b.destroy();
-			}
 		}
 	}
 
@@ -310,7 +305,7 @@ public class FileHeader extends DiffEntry {
 		if (h.getFileHeader() != this)
 			throw new IllegalArgumentException(JGitText.get().hunkBelongsToAnotherFile);
 		if (hunks == null)
-			hunks = new ArrayList<HunkHeader>();
+			hunks = new ArrayList<>();
 		hunks.add(h);
 	}
 

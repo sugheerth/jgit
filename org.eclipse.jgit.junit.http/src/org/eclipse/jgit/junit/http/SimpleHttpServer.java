@@ -53,7 +53,6 @@ import org.eclipse.jetty.servlet.ServletHolder;
 import org.eclipse.jgit.errors.RepositoryNotFoundException;
 import org.eclipse.jgit.http.server.GitServlet;
 import org.eclipse.jgit.lib.Repository;
-import org.eclipse.jgit.storage.file.FileRepository;
 import org.eclipse.jgit.transport.URIish;
 import org.eclipse.jgit.transport.resolver.RepositoryResolver;
 import org.eclipse.jgit.transport.resolver.ServiceNotEnabledException;
@@ -66,11 +65,11 @@ public class SimpleHttpServer {
 
 	AppServer server;
 
-	private final FileRepository db;
+	private final Repository db;
 
 	private URIish uri;
 
-	public SimpleHttpServer(FileRepository repository) {
+	public SimpleHttpServer(Repository repository) {
 		this.db = repository;
 		server = new AppServer();
 	}
@@ -93,6 +92,7 @@ public class SimpleHttpServer {
 	private ServletContextHandler smart(final String path) {
 		GitServlet gs = new GitServlet();
 		gs.setRepositoryResolver(new RepositoryResolver<HttpServletRequest>() {
+			@Override
 			public Repository open(HttpServletRequest req, String name)
 					throws RepositoryNotFoundException,
 					ServiceNotEnabledException {
@@ -109,7 +109,7 @@ public class SimpleHttpServer {
 		return ctx;
 	}
 
-	private static String nameOf(final FileRepository db) {
+	private static String nameOf(final Repository db) {
 		return db.getDirectory().getName();
 	}
 

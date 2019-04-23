@@ -101,8 +101,8 @@ public interface DepthWalk {
 			super(repo);
 
 			this.depth = depth;
-			this.UNSHALLOW = newFlag("UNSHALLOW");
-			this.REINTERESTING = newFlag("REINTERESTING");
+			this.UNSHALLOW = newFlag("UNSHALLOW"); //$NON-NLS-1$
+			this.REINTERESTING = newFlag("REINTERESTING"); //$NON-NLS-1$
 		}
 
 		/**
@@ -113,8 +113,8 @@ public interface DepthWalk {
 			super(or);
 
 			this.depth = depth;
-			this.UNSHALLOW = newFlag("UNSHALLOW");
-			this.REINTERESTING = newFlag("REINTERESTING");
+			this.UNSHALLOW = newFlag("UNSHALLOW"); //$NON-NLS-1$
+			this.REINTERESTING = newFlag("REINTERESTING"); //$NON-NLS-1$
 		}
 
 		/**
@@ -138,16 +138,30 @@ public interface DepthWalk {
 			return new Commit(id);
 		}
 
+		@Override
 		public int getDepth() {
 			return depth;
 		}
 
+		@Override
 		public RevFlag getUnshallowFlag() {
 			return UNSHALLOW;
 		}
 
+		@Override
 		public RevFlag getReinterestingFlag() {
 			return REINTERESTING;
+		}
+
+		/**
+		 * @since 4.5
+		 */
+		@Override
+		public ObjectWalk toObjectWalkWithSameObjects() {
+			ObjectWalk ow = new ObjectWalk(reader, depth);
+			ow.objects = objects;
+			ow.freeFlags = freeFlags;
+			return ow;
 		}
 	}
 
@@ -167,8 +181,8 @@ public interface DepthWalk {
 			super(repo);
 
 			this.depth = depth;
-			this.UNSHALLOW = newFlag("UNSHALLOW");
-			this.REINTERESTING = newFlag("REINTERESTING");
+			this.UNSHALLOW = newFlag("UNSHALLOW"); //$NON-NLS-1$
+			this.REINTERESTING = newFlag("REINTERESTING"); //$NON-NLS-1$
 		}
 
 		/**
@@ -179,8 +193,8 @@ public interface DepthWalk {
 			super(or);
 
 			this.depth = depth;
-			this.UNSHALLOW = newFlag("UNSHALLOW");
-			this.REINTERESTING = newFlag("REINTERESTING");
+			this.UNSHALLOW = newFlag("UNSHALLOW"); //$NON-NLS-1$
+			this.REINTERESTING = newFlag("REINTERESTING"); //$NON-NLS-1$
 		}
 
 		/**
@@ -228,14 +242,17 @@ public interface DepthWalk {
 			return new Commit(id);
 		}
 
+		@Override
 		public int getDepth() {
 			return depth;
 		}
 
+		@Override
 		public RevFlag getUnshallowFlag() {
 			return UNSHALLOW;
 		}
 
+		@Override
 		public RevFlag getReinterestingFlag() {
 			return REINTERESTING;
 		}

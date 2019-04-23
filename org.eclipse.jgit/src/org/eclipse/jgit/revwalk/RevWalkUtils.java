@@ -45,15 +45,11 @@ package org.eclipse.jgit.revwalk;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
 import org.eclipse.jgit.errors.IncorrectObjectTypeException;
 import org.eclipse.jgit.errors.MissingObjectException;
-import org.eclipse.jgit.lib.AnyObjectId;
-import org.eclipse.jgit.lib.ObjectId;
-import org.eclipse.jgit.lib.ObjectIdSubclassMap;
 import org.eclipse.jgit.lib.Ref;
 
 /**
@@ -125,7 +121,7 @@ public final class RevWalkUtils {
 		if (end != null)
 			walk.markUninteresting(end);
 
-		List<RevCommit> commits = new ArrayList<RevCommit>();
+		List<RevCommit> commits = new ArrayList<>();
 		for (RevCommit c : walk)
 			commits.add(c);
 		return commits;
@@ -156,16 +152,18 @@ public final class RevWalkUtils {
 			throws MissingObjectException, IncorrectObjectTypeException,
 			IOException {
 
-		List<Ref> result = new ArrayList<Ref>();
-		// searches from branches can be cut off early if any parent of the
-		// search-for commit is found. This is quite likely, so optimize for this.
-		revWalk.markStart(Arrays.asList(commit.getParents()));
-		ObjectIdSubclassMap<ObjectId> cutOff = new ObjectIdSubclassMap<ObjectId>();
+		// Make sure commit is from the same RevWalk
+		commit = revWalk.parseCommit(commit.getId());
+		revWalk.reset();
+		List<Ref> result = new ArrayList<>();
 
 		final int SKEW = 24*3600; // one day clock skew
 
 		for (Ref ref : refs) {
-			RevCommit headCommit = revWalk.parseCommit(ref.getObjectId());
+			RevObject maybehead = revWalk.parseAny(ref.getObjectId());
+			if (!(maybehead instanceof RevCommit))
+				continue;
+			RevCommit headCommit = (RevCommit) maybehead;
 
 			// if commit is in the ref branch, then the tip of ref should be
 			// newer than the commit we are looking for. Allow for a large
@@ -173,26 +171,8 @@ public final class RevWalkUtils {
 			if (headCommit.getCommitTime() + SKEW < commit.getCommitTime())
 				continue;
 
-			List<ObjectId> maybeCutOff = new ArrayList<ObjectId>(cutOff.size()); // guess rough size
-			revWalk.resetRetain();
-			revWalk.markStart(headCommit);
-			RevCommit current;
-			Ref found = null;
-			while ((current = revWalk.next()) != null) {
-				if (AnyObjectId.equals(current, commit)) {
-					found = ref;
-					break;
-				}
-				if (cutOff.contains(current))
-					break;
-				maybeCutOff.add(current.toObjectId());
-			}
-			if (found != null)
+			if (revWalk.isMergedInto(commit, headCommit))
 				result.add(ref);
-			else
-				for (ObjectId id : maybeCutOff)
-					cutOff.addIfAbsent(id);
-
 		}
 		return result;
 	}

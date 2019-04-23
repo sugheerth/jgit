@@ -63,7 +63,6 @@ import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevObject;
-import org.eclipse.jgit.storage.file.FileRepository;
 import org.eclipse.jgit.transport.RefSpec;
 import org.eclipse.jgit.transport.RemoteRefUpdate;
 import org.eclipse.jgit.transport.URIish;
@@ -75,19 +74,21 @@ public abstract class HttpTestCase extends LocalDiskRepositoryTestCase {
 	/** In-memory application server; subclass must start. */
 	protected AppServer server;
 
+	@Override
 	public void setUp() throws Exception {
 		super.setUp();
 		server = new AppServer();
 	}
 
+	@Override
 	public void tearDown() throws Exception {
 		server.tearDown();
 		super.tearDown();
 	}
 
-	protected TestRepository<FileRepository> createTestRepository()
+	protected TestRepository<Repository> createTestRepository()
 			throws IOException {
-		return new TestRepository<FileRepository>(createBareRepository());
+		return new TestRepository<>(createBareRepository());
 	}
 
 	protected URIish toURIish(String path) throws URISyntaxException {
@@ -118,11 +119,13 @@ public abstract class HttpTestCase extends LocalDiskRepositoryTestCase {
 
 	protected static void fsck(Repository db, RevObject... tips)
 			throws Exception {
-		new TestRepository(db).fsck(tips);
+		TestRepository<? extends Repository> tr =
+				new TestRepository<>(db);
+		tr.fsck(tips);
 	}
 
 	protected static Set<RefSpec> mirror(String... refs) {
-		HashSet<RefSpec> r = new HashSet<RefSpec>();
+		HashSet<RefSpec> r = new HashSet<>();
 		for (String name : refs) {
 			RefSpec rs = new RefSpec(name);
 			rs = rs.setDestination(name);

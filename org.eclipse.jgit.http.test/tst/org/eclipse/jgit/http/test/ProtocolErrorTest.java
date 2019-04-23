@@ -66,9 +66,8 @@ import org.eclipse.jgit.junit.http.HttpTestCase;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Repository;
+import org.eclipse.jgit.lib.StoredConfig;
 import org.eclipse.jgit.revwalk.RevBlob;
-import org.eclipse.jgit.storage.file.FileBasedConfig;
-import org.eclipse.jgit.storage.file.FileRepository;
 import org.eclipse.jgit.transport.PacketLineIn;
 import org.eclipse.jgit.transport.PacketLineOut;
 import org.eclipse.jgit.transport.URIish;
@@ -79,22 +78,24 @@ import org.junit.Before;
 import org.junit.Test;
 
 public class ProtocolErrorTest extends HttpTestCase {
-	private FileRepository remoteRepository;
+	private Repository remoteRepository;
 
 	private URIish remoteURI;
 
 	private RevBlob a_blob;
 
+	@Override
 	@Before
 	public void setUp() throws Exception {
 		super.setUp();
 
-		final TestRepository<FileRepository> src = createTestRepository();
+		final TestRepository<Repository> src = createTestRepository();
 		final String srcName = src.getRepository().getDirectory().getName();
 
 		ServletContextHandler app = server.addContext("/git");
 		GitServlet gs = new GitServlet();
 		gs.setRepositoryResolver(new RepositoryResolver<HttpServletRequest>() {
+			@Override
 			public Repository open(HttpServletRequest req, String name)
 					throws RepositoryNotFoundException,
 					ServiceNotEnabledException {
@@ -113,7 +114,7 @@ public class ProtocolErrorTest extends HttpTestCase {
 		remoteRepository = src.getRepository();
 		remoteURI = toURIish(app, srcName);
 
-		FileBasedConfig cfg = remoteRepository.getConfig();
+		StoredConfig cfg = remoteRepository.getConfig();
 		cfg.setBoolean("http", null, "receivepack", true);
 		cfg.save();
 
@@ -163,7 +164,7 @@ public class ProtocolErrorTest extends HttpTestCase {
 			try {
 				PacketLineIn pckin = new PacketLineIn(rawin);
 				assertEquals("unpack error "
-						+ JGitText.get().packfileIsTruncated,
+						+ JGitText.get().packfileIsTruncatedNoParam,
 						pckin.readString());
 				assertEquals("ng refs/objects/A n/a (unpacker error)",
 						pckin.readString());
@@ -176,7 +177,7 @@ public class ProtocolErrorTest extends HttpTestCase {
 		}
 	}
 
-	private void packHeader(ByteArrayOutputStream tinyPack, int cnt)
+	private static void packHeader(ByteArrayOutputStream tinyPack, int cnt)
 			throws IOException {
 		final byte[] hdr = new byte[8];
 		NB.encodeInt32(hdr, 0, 2);

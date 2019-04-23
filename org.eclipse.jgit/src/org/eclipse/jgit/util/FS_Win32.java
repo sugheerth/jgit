@@ -45,32 +45,60 @@
 package org.eclipse.jgit.util;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-class FS_Win32 extends FS {
-	FS_Win32() {
+import org.eclipse.jgit.errors.CommandFailedException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+
+/**
+ * FS implementation for Windows
+ *
+ * @since 3.0
+ */
+public class FS_Win32 extends FS {
+	private final static Logger LOG = LoggerFactory.getLogger(FS_Win32.class);
+
+	private volatile Boolean supportSymlinks;
+
+	/**
+	 * Constructor
+	 */
+	public FS_Win32() {
 		super();
 	}
 
-	FS_Win32(FS src) {
+	/**
+	 * Constructor
+	 *
+	 * @param src
+	 *            instance whose attributes to copy
+	 */
+	protected FS_Win32(FS src) {
 		super(src);
 	}
 
+	@Override
 	public FS newInstance() {
 		return new FS_Win32(this);
 	}
 
+	@Override
 	public boolean supportsExecute() {
 		return false;
 	}
 
+	@Override
 	public boolean canExecute(final File f) {
 		return false;
 	}
 
+	@Override
 	public boolean setExecute(final File f, final boolean canExec) {
 		return false;
 	}
@@ -86,39 +114,46 @@ class FS_Win32 extends FS {
 	}
 
 	@Override
-	protected File discoverGitPrefix() {
-		String path = SystemReader.getInstance().getenv("PATH");
-		File gitExe = searchPath(path, "git.exe", "git.cmd");
-		if (gitExe != null)
-			return gitExe.getParentFile().getParentFile();
+	protected File discoverGitExe() {
+		String path = SystemReader.getInstance().getenv("PATH"); //$NON-NLS-1$
+		File gitExe = searchPath(path, "git.exe", "git.cmd"); //$NON-NLS-1$ //$NON-NLS-2$
 
-		// This isn't likely to work, if bash is in $PATH, git should
-		// also be in $PATH. But its worth trying.
-		//
-		String w = readPipe(userHome(), //
-				new String[] { "bash", "--login", "-c", "which git" }, //
-				Charset.defaultCharset().name());
-		if (w != null) {
-			// The path may be in cygwin/msys notation so resolve it right away
-			gitExe = resolve(null, w);
-			if (gitExe != null)
-				return gitExe.getParentFile().getParentFile();
+		if (gitExe == null) {
+			if (searchPath(path, "bash.exe") != null) { //$NON-NLS-1$
+				// This isn't likely to work, but its worth trying:
+				// If bash is in $PATH, git should also be in $PATH.
+				String w;
+				try {
+					w = readPipe(userHome(),
+						new String[]{"bash", "--login", "-c", "which git"}, // //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+						Charset.defaultCharset().name());
+				} catch (CommandFailedException e) {
+					LOG.warn(e.getMessage());
+					return null;
+				}
+				if (!StringUtils.isEmptyOrNull(w)) {
+					// The path may be in cygwin/msys notation so resolve it right away
+					gitExe = resolve(null, w);
+				}
+			}
 		}
-		return null;
+
+		return gitExe;
 	}
 
 	@Override
 	protected File userHomeImpl() {
-		String home = SystemReader.getInstance().getenv("HOME");
+		String home = SystemReader.getInstance().getenv("HOME"); //$NON-NLS-1$
 		if (home != null)
 			return resolve(null, home);
-		String homeDrive = SystemReader.getInstance().getenv("HOMEDRIVE");
+		String homeDrive = SystemReader.getInstance().getenv("HOMEDRIVE"); //$NON-NLS-1$
 		if (homeDrive != null) {
-			String homePath = SystemReader.getInstance().getenv("HOMEPATH");
-			return new File(homeDrive, homePath);
+			String homePath = SystemReader.getInstance().getenv("HOMEPATH"); //$NON-NLS-1$
+			if (homePath != null)
+				return new File(homeDrive, homePath);
 		}
 
-		String homeShare = SystemReader.getInstance().getenv("HOMESHARE");
+		String homeShare = SystemReader.getInstance().getenv("HOMESHARE"); //$NON-NLS-1$
 		if (homeShare != null)
 			return new File(homeShare);
 
@@ -127,13 +162,49 @@ class FS_Win32 extends FS {
 
 	@Override
 	public ProcessBuilder runInShell(String cmd, String[] args) {
-		List<String> argv = new ArrayList<String>(3 + args.length);
-		argv.add("cmd.exe");
-		argv.add("/c");
+		List<String> argv = new ArrayList<>(3 + args.length);
+		argv.add("cmd.exe"); //$NON-NLS-1$
+		argv.add("/c"); //$NON-NLS-1$
 		argv.add(cmd);
 		argv.addAll(Arrays.asList(args));
 		ProcessBuilder proc = new ProcessBuilder();
 		proc.command(argv);
 		return proc;
+	}
+
+	@Override
+	public boolean supportsSymlinks() {
+		if (supportSymlinks == null)
+			detectSymlinkSupport();
+		return Boolean.TRUE.equals(supportSymlinks);
+	}
+
+	private void detectSymlinkSupport() {
+		File tempFile = null;
+		try {
+			tempFile = File.createTempFile("tempsymlinktarget", ""); //$NON-NLS-1$ //$NON-NLS-2$
+			File linkName = new File(tempFile.getParentFile(), "tempsymlink"); //$NON-NLS-1$
+			createSymLink(linkName, tempFile.getPath());
+			supportSymlinks = Boolean.TRUE;
+			linkName.delete();
+		} catch (IOException | UnsupportedOperationException
+				| InternalError e) {
+			supportSymlinks = Boolean.FALSE;
+		} finally {
+			if (tempFile != null)
+				try {
+					FileUtils.delete(tempFile);
+				} catch (IOException e) {
+					throw new RuntimeException(e); // panic
+				}
+		}
+	}
+
+	/**
+	 * @since 3.3
+	 */
+	@Override
+	public Attributes getAttributes(File path) {
+		return FileUtils.getFileAttributesBasic(this, path);
 	}
 }

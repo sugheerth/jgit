@@ -45,15 +45,16 @@ package org.eclipse.jgit.api;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
+import java.io.File;
 import java.io.IOException;
 
 import org.eclipse.jgit.api.ListBranchCommand.ListMode;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.api.errors.JGitInternalException;
 import org.eclipse.jgit.errors.RepositoryNotFoundException;
+import org.eclipse.jgit.junit.RepositoryTestCase;
 import org.eclipse.jgit.lib.Repository;
-import org.eclipse.jgit.lib.RepositoryTestCase;
-import org.junit.After;
+import org.eclipse.jgit.util.FileUtils;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -64,25 +65,18 @@ public class GitConstructionTest extends RepositoryTestCase {
 	@Before
 	public void setUp() throws Exception {
 		super.setUp();
-		Git git = new Git(db);
-		git.commit().setMessage("initial commit").call();
-		writeTrashFile("Test.txt", "Hello world");
-		git.add().addFilepattern("Test.txt").call();
-		git.commit().setMessage("Initial commit").call();
+		try (Git git = new Git(db)) {
+			git.commit().setMessage("initial commit").call();
+			writeTrashFile("Test.txt", "Hello world");
+			git.add().addFilepattern("Test.txt").call();
+			git.commit().setMessage("Initial commit").call();
+		}
 
 		bareRepo = Git.cloneRepository().setBare(true)
 				.setURI(db.getDirectory().toURI().toString())
 				.setDirectory(createUniqueTestGitDir(true)).call()
 				.getRepository();
 		addRepoToClose(bareRepo);
-	}
-
-	@Override
-	@After
-	public void tearDown() throws Exception {
-		db.close();
-		bareRepo.close();
-		super.tearDown();
 	}
 
 	@Test
@@ -121,6 +115,32 @@ public class GitConstructionTest extends RepositoryTestCase {
 			fail("Expected exception has not been thrown");
 		} catch (RepositoryNotFoundException e) {
 			// should not get here
+		}
+	}
+
+	@Test
+	/**
+	 * Tests that a repository with packfiles can be deleted after calling
+	 * Git.close(). On Windows the first try to delete the worktree will fail
+	 * (because file handles on packfiles are still open) but the second
+	 * attempt after a close will succeed.
+	 *
+	 * @throws IOException
+	 * @throws JGitInternalException
+	 * @throws GitAPIException
+	 */
+	public void testClose() throws IOException, JGitInternalException,
+			GitAPIException {
+		File workTree = db.getWorkTree();
+		Git git = Git.open(workTree);
+		git.gc().setExpire(null).call();
+		git.checkout().setName(git.getRepository().resolve("HEAD^").getName())
+				.call();
+		try {
+			FileUtils.delete(workTree, FileUtils.RECURSIVE);
+		} catch (IOException e) {
+			git.close();
+			FileUtils.delete(workTree, FileUtils.RECURSIVE);
 		}
 	}
 }

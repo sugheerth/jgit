@@ -48,14 +48,14 @@
 
 package org.eclipse.jgit.transport;
 
+import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.PipedInputStream;
-import java.io.PipedOutputStream;
 
 import org.eclipse.jgit.errors.TransportException;
-import org.eclipse.jgit.util.io.StreamCopyThread;
+import org.eclipse.jgit.internal.JGitText;
+import org.eclipse.jgit.util.io.IsolatedOutputStream;
 
 import com.jcraft.jsch.Channel;
 import com.jcraft.jsch.ChannelExec;
@@ -70,13 +70,13 @@ import com.jcraft.jsch.Session;
  * to the constructor.
  */
 public class JschSession implements RemoteSession {
-	private final Session sock;
-	private final URIish uri;
+	final Session sock;
+	final URIish uri;
 
 	/**
 	 * Create a new session object by passing the real Jsch session and the URI
 	 * information.
-	 * 
+	 *
 	 * @param session
 	 *            the real Jsch session created elsewhere.
 	 * @param uri
@@ -87,10 +87,12 @@ public class JschSession implements RemoteSession {
 		this.uri = uri;
 	}
 
+	@Override
 	public Process exec(String command, int timeout) throws IOException {
 		return new JschProcess(command, timeout);
 	}
 
+	@Override
 	public void disconnect() {
 		if (sock.isConnected())
 			sock.disconnect();
@@ -106,7 +108,7 @@ public class JschSession implements RemoteSession {
 	 *             on problems getting the channel.
 	 */
 	public Channel getSftpChannel() throws JSchException {
-		return sock.openChannel("sftp");
+		return sock.openChannel("sftp"); //$NON-NLS-1$
 	}
 
 	/**
@@ -118,7 +120,7 @@ public class JschSession implements RemoteSession {
 	private class JschProcess extends Process {
 		private ChannelExec channel;
 
-		private final int timeout;
+		final int timeout;
 
 		private InputStream inputStream;
 
@@ -140,18 +142,32 @@ public class JschSession implements RemoteSession {
 		 * @throws IOException
 		 *             on problems opening streams
 		 */
-		private JschProcess(final String commandName, int tms)
+		JschProcess(final String commandName, int tms)
 				throws TransportException, IOException {
 			timeout = tms;
 			try {
-				channel = (ChannelExec) sock.openChannel("exec");
+				channel = (ChannelExec) sock.openChannel("exec"); //$NON-NLS-1$
 				channel.setCommand(commandName);
 				setupStreams();
 				channel.connect(timeout > 0 ? timeout * 1000 : 0);
-				if (!channel.isConnected())
-					throw new TransportException(uri, "connection failed");
+				if (!channel.isConnected()) {
+					closeOutputStream();
+					throw new TransportException(uri,
+							JGitText.get().connectionFailed);
+				}
 			} catch (JSchException e) {
+				closeOutputStream();
 				throw new TransportException(uri, e.getMessage(), e);
+			}
+		}
+
+		private void closeOutputStream() {
+			if (outputStream != null) {
+				try {
+					outputStream.close();
+				} catch (IOException ioe) {
+					// ignore
+				}
 			}
 		}
 
@@ -163,33 +179,12 @@ public class JschSession implements RemoteSession {
 			// that we spawn a background thread to shuttle data through a pipe,
 			// as we can issue an interrupted write out of that. Its slower, so
 			// we only use this route if there is a timeout.
-			final OutputStream out = channel.getOutputStream();
+			OutputStream out = channel.getOutputStream();
 			if (timeout <= 0) {
 				outputStream = out;
 			} else {
-				final PipedInputStream pipeIn = new PipedInputStream();
-				final StreamCopyThread copier = new StreamCopyThread(pipeIn,
-						out);
-				final PipedOutputStream pipeOut = new PipedOutputStream(pipeIn) {
-					@Override
-					public void flush() throws IOException {
-						super.flush();
-						copier.flush();
-					}
-
-					@Override
-					public void close() throws IOException {
-						super.close();
-						try {
-							copier.join(timeout * 1000);
-						} catch (InterruptedException e) {
-							// Just wake early, the thread will terminate
-							// anyway.
-						}
-					}
-				};
-				copier.start();
-				outputStream = pipeOut;
+				IsolatedOutputStream i = new IsolatedOutputStream(out);
+				outputStream = new BufferedOutputStream(i, 16 * 1024);
 			}
 
 			errStream = channel.getErrStream();

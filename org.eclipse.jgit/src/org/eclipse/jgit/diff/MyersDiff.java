@@ -46,68 +46,75 @@ package org.eclipse.jgit.diff;
 
 import java.text.MessageFormat;
 
+import org.eclipse.jgit.errors.DiffInterruptedException;
 import org.eclipse.jgit.internal.JGitText;
 import org.eclipse.jgit.util.IntList;
 import org.eclipse.jgit.util.LongList;
 
 /**
- * Diff algorithm, based on "An O(ND) Difference Algorithm and its
- * Variations", by Eugene Myers.
- *
+ * Diff algorithm, based on "An O(ND) Difference Algorithm and its Variations",
+ * by Eugene Myers.
+ * <p>
  * The basic idea is to put the line numbers of text A as columns ("x") and the
- * lines of text B as rows ("y").  Now you try to find the shortest "edit path"
- * from the upper left corner to the lower right corner, where you can
- * always go horizontally or vertically, but diagonally from (x,y) to
- * (x+1,y+1) only if line x in text A is identical to line y in text B.
- *
- * Myers' fundamental concept is the "furthest reaching D-path on diagonal k":
- * a D-path is an edit path starting at the upper left corner and containing
- * exactly D non-diagonal elements ("differences").  The furthest reaching
- * D-path on diagonal k is the one that contains the most (diagonal) elements
- * which ends on diagonal k (where k = y - x).
- *
+ * lines of text B as rows ("y"). Now you try to find the shortest "edit path"
+ * from the upper left corner to the lower right corner, where you can always go
+ * horizontally or vertically, but diagonally from (x,y) to (x+1,y+1) only if
+ * line x in text A is identical to line y in text B.
+ * <p>
+ * Myers' fundamental concept is the "furthest reaching D-path on diagonal k": a
+ * D-path is an edit path starting at the upper left corner and containing
+ * exactly D non-diagonal elements ("differences"). The furthest reaching D-path
+ * on diagonal k is the one that contains the most (diagonal) elements which
+ * ends on diagonal k (where k = y - x).
+ * <p>
  * Example:
  *
+ * <pre>
  *    H E L L O   W O R L D
  *    ____
  *  L     \___
  *  O         \___
  *  W             \________
- *
- * Since every D-path has exactly D horizontal or vertical elements, it can
- * only end on the diagonals -D, -D+2, ..., D-2, D.
- *
- * Since every furthest reaching D-path contains at least one furthest
- * reaching (D-1)-path (except for D=0), we can construct them recursively.
- *
+ * </pre>
+ * <p>
+ * Since every D-path has exactly D horizontal or vertical elements, it can only
+ * end on the diagonals -D, -D+2, ..., D-2, D.
+ * <p>
+ * Since every furthest reaching D-path contains at least one furthest reaching
+ * (D-1)-path (except for D=0), we can construct them recursively.
+ * <p>
  * Since we are really interested in the shortest edit path, we can start
  * looking for a 0-path, then a 1-path, and so on, until we find a path that
  * ends in the lower right corner.
- *
+ * <p>
  * To save space, we do not need to store all paths (which has quadratic space
- * requirements), but generate the D-paths simultaneously from both sides.
- * When the ends meet, we will have found "the middle" of the path.  From the
- * end points of that diagonal part, we can generate the rest recursively.
- *
+ * requirements), but generate the D-paths simultaneously from both sides. When
+ * the ends meet, we will have found "the middle" of the path. From the end
+ * points of that diagonal part, we can generate the rest recursively.
+ * <p>
  * This only requires linear space.
+ * <p>
+ * The overall (runtime) complexity is:
  *
- * The overall (runtime) complexity is
- *
- *	O(N * D^2 + 2 * N/2 * (D/2)^2 + 4 * N/4 * (D/4)^2 + ...)
- *	= O(N * D^2 * 5 / 4) = O(N * D^2),
- *
- * (With each step, we have to find the middle parts of twice as many regions
- * as before, but the regions (as well as the D) are halved.)
- *
- * So the overall runtime complexity stays the same with linear space,
- * albeit with a larger constant factor.
+ * <pre>
+ *     O(N * D^2 + 2 * N/2 * (D/2)^2 + 4 * N/4 * (D/4)^2 + ...)
+ *     = O(N * D^2 * 5 / 4) = O(N * D^2),
+ * </pre>
+ * <p>
+ * (With each step, we have to find the middle parts of twice as many regions as
+ * before, but the regions (as well as the D) are halved.)
+ * <p>
+ * So the overall runtime complexity stays the same with linear space, albeit
+ * with a larger constant factor.
  *
  * @param <S>
  *            type of sequence.
  */
+@SuppressWarnings("hiding")
 public class MyersDiff<S extends Sequence> {
 	/** Singleton instance of MyersDiff. */
 	public static final DiffAlgorithm INSTANCE = new LowLevelDiffAlgorithm() {
+		@SuppressWarnings("unused")
 		@Override
 		public <S extends Sequence> void diffNonCommon(EditList edits,
 				HashedSequenceComparator<S> cmp, HashedSequence<S> a,
@@ -163,11 +170,21 @@ public class MyersDiff<S extends Sequence> {
 	}
 
 	/**
-	 * Calculates the differences between a given part of A against another given part of B
-	 * @param beginA start of the part of A which should be compared (0<=beginA<sizeof(A))
-	 * @param endA end of the part of A which should be compared (beginA<=endA<sizeof(A))
-	 * @param beginB start of the part of B which should be compared (0<=beginB<sizeof(B))
-	 * @param endB end of the part of B which should be compared (beginB<=endB<sizeof(B))
+	 * Calculates the differences between a given part of A against another
+	 * given part of B
+	 *
+	 * @param beginA
+	 *            start of the part of A which should be compared
+	 *            (0&lt;=beginA&lt;sizeof(A))
+	 * @param endA
+	 *            end of the part of A which should be compared
+	 *            (beginA&lt;=endA&lt;sizeof(A))
+	 * @param beginB
+	 *            start of the part of B which should be compared
+	 *            (0&lt;=beginB&lt;sizeof(B))
+	 * @param endB
+	 *            end of the part of B which should be compared
+	 *            (beginB&lt;=endB&lt;sizeof(B))
 	 */
 	protected void calculateEdits(int beginA, int endA,
 			int beginB, int endB) {
@@ -391,6 +408,9 @@ if (k < beginK || k > endK)
 				// TODO: move end points out of the loop to avoid conditionals inside the loop
 				// go backwards so that we can avoid temp vars
 				for (int k = endK; k >= beginK; k -= 2) {
+					if (Thread.interrupted()) {
+						throw new DiffInterruptedException();
+					}
 					int left = -1, right = -1;
 					long leftSnake = -1L, rightSnake = -1L;
 					// TODO: refactor into its own function
@@ -440,6 +460,7 @@ if (k < beginK || k > endK)
 		}
 
 		class ForwardEditPaths extends EditPaths {
+			@Override
 			final int snake(int k, int x) {
 				for (; x < endA && k + x < endB; x++)
 					if (!cmp.equals(a, x, b, k + x))
@@ -447,18 +468,22 @@ if (k < beginK || k > endK)
 				return x;
 			}
 
+			@Override
 			final int getLeft(final int x) {
 				return x;
 			}
 
+			@Override
 			final int getRight(final int x) {
 				return x + 1;
 			}
 
+			@Override
 			final boolean isBetter(final int left, final int right) {
 				return left > right;
 			}
 
+			@Override
 			final void adjustMinMaxK(final int k, final int x) {
 				if (x >= endA || k + x >= endB) {
 					if (k > backward.middleK)
@@ -468,6 +493,7 @@ if (k < beginK || k > endK)
 				}
 			}
 
+			@Override
 			final boolean meets(int d, int k, int x, long snake) {
 				if (k < backward.beginK || k > backward.endK)
 					return false;
@@ -482,6 +508,7 @@ if (k < beginK || k > endK)
 		}
 
 		class BackwardEditPaths extends EditPaths {
+			@Override
 			final int snake(int k, int x) {
 				for (; x > beginA && k + x > beginB; x--)
 					if (!cmp.equals(a, x - 1, b, k + x - 1))
@@ -489,18 +516,22 @@ if (k < beginK || k > endK)
 				return x;
 			}
 
+			@Override
 			final int getLeft(final int x) {
 				return x - 1;
 			}
 
+			@Override
 			final int getRight(final int x) {
 				return x;
 			}
 
+			@Override
 			final boolean isBetter(final int left, final int right) {
 				return left < right;
 			}
 
+			@Override
 			final void adjustMinMaxK(final int k, final int x) {
 				if (x <= beginA || k + x <= beginB) {
 					if (k > forward.middleK)
@@ -510,6 +541,7 @@ if (k < beginK || k > endK)
 				}
 			}
 
+			@Override
 			final boolean meets(int d, int k, int x, long snake) {
 				if (k < forward.beginK || k > forward.endK)
 					return false;

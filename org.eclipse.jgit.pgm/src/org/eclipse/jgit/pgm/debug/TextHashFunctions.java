@@ -43,6 +43,9 @@
 
 package org.eclipse.jgit.pgm.debug;
 
+import static java.lang.Integer.valueOf;
+import static java.lang.Long.valueOf;
+
 import java.io.File;
 import java.lang.reflect.Field;
 import java.security.MessageDigest;
@@ -61,8 +64,9 @@ import org.eclipse.jgit.lib.ObjectReader;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.lib.RepositoryBuilder;
 import org.eclipse.jgit.lib.RepositoryCache;
-import org.eclipse.jgit.pgm.CLIText;
+import org.eclipse.jgit.pgm.Command;
 import org.eclipse.jgit.pgm.TextBuiltin;
+import org.eclipse.jgit.pgm.internal.CLIText;
 import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.treewalk.TreeWalk;
 import org.eclipse.jgit.util.FS;
@@ -87,6 +91,7 @@ import org.kohsuke.args4j.Option;
  * type {@link Fold} and implement the logic. The test suite will automatically
  * pick up the new function through reflection.
  */
+@Command(usage = "usage_TextHashFunctions")
 class TextHashFunctions extends TextBuiltin {
 
 	/** Standard SHA-1 on the line, using the first 4 bytes as the hash code. */
@@ -246,16 +251,16 @@ class TextHashFunctions extends TextBuiltin {
 	//
 
 	@Option(name = "--hash", multiValued = true, metaVar = "NAME", usage = "Enable hash function(s)")
-	List<String> hashFunctions = new ArrayList<String>();
+	List<String> hashFunctions = new ArrayList<>();
 
 	@Option(name = "--fold", multiValued = true, metaVar = "NAME", usage = "Enable fold function(s)")
-	List<String> foldFunctions = new ArrayList<String>();
+	List<String> foldFunctions = new ArrayList<>();
 
 	@Option(name = "--text-limit", metaVar = "LIMIT", usage = "Maximum size in KiB to scan")
 	int textLimit = 15 * 1024; // 15 MiB as later we do * 1024.
 
 	@Option(name = "--repository", aliases = { "-r" }, multiValued = true, metaVar = "GIT_DIR", usage = "Repository to scan")
-	List<File> gitDirs = new ArrayList<File>();
+	List<File> gitDirs = new ArrayList<>();
 
 	@Override
 	protected boolean requiresRepository() {
@@ -281,26 +286,25 @@ class TextHashFunctions extends TextBuiltin {
 			else
 				rb.findGitDir(dir);
 
-			Repository db = rb.build();
+			Repository repo = rb.build();
 			try {
-				run(db);
+				run(repo);
 			} finally {
-				db.close();
+				repo.close();
 			}
 		}
 	}
 
-	private void run(Repository db) throws Exception {
+	private void run(Repository repo) throws Exception {
 		List<Function> all = init();
 
 		long fileCnt = 0;
 		long lineCnt = 0;
-		ObjectReader or = db.newObjectReader();
-		try {
-			final MutableObjectId id = new MutableObjectId();
+		try (ObjectReader or = repo.newObjectReader();
 			RevWalk rw = new RevWalk(or);
-			TreeWalk tw = new TreeWalk(or);
-			tw.reset(rw.parseTree(db.resolve(Constants.HEAD)));
+			TreeWalk tw = new TreeWalk(or)) {
+			final MutableObjectId id = new MutableObjectId();
+			tw.reset(rw.parseTree(repo.resolve(Constants.HEAD)));
 			tw.setRecursive(true);
 
 			while (tw.next()) {
@@ -323,7 +327,7 @@ class TextHashFunctions extends TextBuiltin {
 				RawText txt = new RawText(raw);
 				int[] lines = new int[txt.size()];
 				int cnt = 0;
-				HashSet<Line> u = new HashSet<Line>();
+				HashSet<Line> u = new HashSet<>();
 				for (int i = 0; i < txt.size(); i++) {
 					if (u.add(new Line(txt, i)))
 						lines[cnt++] = i;
@@ -335,38 +339,38 @@ class TextHashFunctions extends TextBuiltin {
 				for (Function fun : all)
 					testOne(fun, txt, lines, cnt);
 			}
-		} finally {
-			or.release();
 		}
 
-		if (db.getDirectory() != null) {
-			String name = db.getDirectory().getName();
-			File parent = db.getDirectory().getParentFile();
+		File directory = repo.getDirectory();
+		if (directory != null) {
+			String name = directory.getName();
+			File parent = directory.getParentFile();
 			if (name.equals(Constants.DOT_GIT) && parent != null)
 				name = parent.getName();
-			out.println(name + ":");
+			outw.println(name + ":"); //$NON-NLS-1$
 		}
-		out.format("  %6d files; %5d avg. unique lines/file\n", //
-				fileCnt, //
-				lineCnt / fileCnt);
-		out.format("%-20s %-15s %9s\n", "Hash", "Fold", "Max Len");
-		out.println("-----------------------------------------------");
+		outw.format("  %6d files; %5d avg. unique lines/file\n", //$NON-NLS-1$
+				valueOf(fileCnt), //
+				valueOf(lineCnt / fileCnt));
+		outw.format("%-20s %-15s %9s\n", "Hash", "Fold", "Max Len"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+		outw.println("-----------------------------------------------"); //$NON-NLS-1$
 		String lastHashName = null;
 		for (Function fun : all) {
 			String hashName = fun.hash.name;
 			if (hashName.equals(lastHashName))
-				hashName = "";
-			out.format("%-20s %-15s %9d\n", //
+				hashName = ""; //$NON-NLS-1$
+			outw.format("%-20s %-15s %9d\n", // //$NON-NLS-1$
 					hashName, //
 					fun.fold.name, //
-					fun.maxChainLength);
+					valueOf(fun.maxChainLength));
 			lastHashName = fun.hash.name;
 		}
-		out.println();
-		out.flush();
+		outw.println();
+		outw.flush();
 	}
 
-	private void testOne(Function fun, RawText txt, int[] elements, int cnt) {
+	private static void testOne(Function fun, RawText txt, int[] elements,
+			int cnt) {
 		final Hash cmp = fun.hash;
 		final Fold fold = fun.fold;
 
@@ -382,8 +386,8 @@ class TextHashFunctions extends TextBuiltin {
 	}
 
 	private List<Function> init() {
-		List<Hash> hashes = new ArrayList<Hash>();
-		List<Fold> folds = new ArrayList<Fold>();
+		List<Hash> hashes = new ArrayList<>();
+		List<Fold> folds = new ArrayList<>();
 
 		try {
 			for (Field f : TextHashFunctions.class.getDeclaredFields()) {
@@ -401,12 +405,12 @@ class TextHashFunctions extends TextBuiltin {
 				}
 			}
 		} catch (IllegalArgumentException e) {
-			throw new RuntimeException("Cannot determine names", e);
+			throw new RuntimeException("Cannot determine names", e); //$NON-NLS-1$
 		} catch (IllegalAccessException e) {
-			throw new RuntimeException("Cannot determine names", e);
+			throw new RuntimeException("Cannot determine names", e); //$NON-NLS-1$
 		}
 
-		List<Function> all = new ArrayList<Function>();
+		List<Function> all = new ArrayList<>();
 		for (Hash cmp : hashes) {
 			if (include(cmp.name, hashFunctions)) {
 				for (Fold f : folds) {

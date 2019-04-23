@@ -45,13 +45,29 @@
 package org.eclipse.jgit.treewalk;
 
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
 
+import org.eclipse.jgit.annotations.Nullable;
+import org.eclipse.jgit.api.errors.JGitInternalException;
+import org.eclipse.jgit.attributes.Attribute;
+import org.eclipse.jgit.attributes.Attributes;
+import org.eclipse.jgit.attributes.AttributesHandler;
+import org.eclipse.jgit.attributes.AttributesNodeProvider;
+import org.eclipse.jgit.attributes.AttributesProvider;
+import org.eclipse.jgit.attributes.FilterCommandRegistry;
+import org.eclipse.jgit.dircache.DirCacheBuildIterator;
+import org.eclipse.jgit.dircache.DirCacheIterator;
 import org.eclipse.jgit.errors.CorruptObjectException;
 import org.eclipse.jgit.errors.IncorrectObjectTypeException;
 import org.eclipse.jgit.errors.MissingObjectException;
 import org.eclipse.jgit.errors.StopWalkException;
 import org.eclipse.jgit.lib.AnyObjectId;
+import org.eclipse.jgit.lib.Config;
+import org.eclipse.jgit.lib.ConfigConstants;
 import org.eclipse.jgit.lib.Constants;
+import org.eclipse.jgit.lib.CoreConfig.EolStreamType;
 import org.eclipse.jgit.lib.FileMode;
 import org.eclipse.jgit.lib.MutableObjectId;
 import org.eclipse.jgit.lib.ObjectId;
@@ -60,7 +76,9 @@ import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevTree;
 import org.eclipse.jgit.treewalk.filter.PathFilter;
 import org.eclipse.jgit.treewalk.filter.TreeFilter;
+import org.eclipse.jgit.util.QuotedString;
 import org.eclipse.jgit.util.RawParseUtils;
+import org.eclipse.jgit.util.io.EolStreamTypeUtil;
 
 /**
  * Walks one or more {@link AbstractTreeIterator}s in parallel.
@@ -82,8 +100,43 @@ import org.eclipse.jgit.util.RawParseUtils;
  * Multiple simultaneous TreeWalk instances per {@link Repository} are
  * permitted, even from concurrent threads.
  */
-public class TreeWalk {
+public class TreeWalk implements AutoCloseable, AttributesProvider {
 	private static final AbstractTreeIterator[] NO_TREES = {};
+
+	/**
+	 * @since 4.2
+	 */
+	public static enum OperationType {
+		/**
+		 * Represents a checkout operation (for example a checkout or reset
+		 * operation).
+		 */
+		CHECKOUT_OP,
+
+		/**
+		 * Represents a checkin operation (for example an add operation)
+		 */
+		CHECKIN_OP
+	}
+
+	/**
+	 *            Type of operation you want to retrieve the git attributes for.
+	 */
+	private OperationType operationType = OperationType.CHECKOUT_OP;
+
+	/**
+	 * The filter command as defined in gitattributes. The keys are
+	 * filterName+"."+filterCommandType. E.g. "lfs.clean"
+	 */
+	private Map<String, String> filterCommandsByNameDotType = new HashMap<>();
+
+	/**
+	 * @param operationType
+	 * @since 4.2
+	 */
+	public void setOperationType(OperationType operationType) {
+		this.operationType = operationType;
+	}
 
 	/**
 	 * Open a tree walk and filter to exactly one path.
@@ -113,7 +166,44 @@ public class TreeWalk {
 	public static TreeWalk forPath(final ObjectReader reader, final String path,
 			final AnyObjectId... trees) throws MissingObjectException,
 			IncorrectObjectTypeException, CorruptObjectException, IOException {
-		TreeWalk tw = new TreeWalk(reader);
+		return forPath(null, reader, path, trees);
+	}
+
+	/**
+	 * Open a tree walk and filter to exactly one path.
+	 * <p>
+	 * The returned tree walk is already positioned on the requested path, so
+	 * the caller should not need to invoke {@link #next()} unless they are
+	 * looking for a possible directory/file name conflict.
+	 *
+	 * @param repo
+	 *            repository to read config data and
+	 *            {@link AttributesNodeProvider} from.
+	 * @param reader
+	 *            the reader the walker will obtain tree data from.
+	 * @param path
+	 *            single path to advance the tree walk instance into.
+	 * @param trees
+	 *            one or more trees to walk through, all with the same root.
+	 * @return a new tree walk configured for exactly this one path; null if no
+	 *         path was found in any of the trees.
+	 * @throws IOException
+	 *             reading a pack file or loose object failed.
+	 * @throws CorruptObjectException
+	 *             an tree object could not be read as its data stream did not
+	 *             appear to be a tree, or could not be inflated.
+	 * @throws IncorrectObjectTypeException
+	 *             an object we expected to be a tree was not a tree.
+	 * @throws MissingObjectException
+	 *             a tree object was not found.
+	 * @since 4.3
+	 */
+	public static TreeWalk forPath(final @Nullable Repository repo,
+			final ObjectReader reader, final String path,
+			final AnyObjectId... trees)
+					throws MissingObjectException, IncorrectObjectTypeException,
+					CorruptObjectException, IOException {
+		TreeWalk tw = new TreeWalk(repo, reader);
 		PathFilter f = PathFilter.create(path);
 		tw.setFilter(f);
 		tw.reset(trees);
@@ -157,11 +247,8 @@ public class TreeWalk {
 	public static TreeWalk forPath(final Repository db, final String path,
 			final AnyObjectId... trees) throws MissingObjectException,
 			IncorrectObjectTypeException, CorruptObjectException, IOException {
-		ObjectReader reader = db.newObjectReader();
-		try {
-			return forPath(reader, path, trees);
-		} finally {
-			reader.release();
+		try (ObjectReader reader = db.newObjectReader()) {
+			return forPath(db, reader, path, trees);
 		}
 	}
 
@@ -198,6 +285,8 @@ public class TreeWalk {
 
 	private final ObjectReader reader;
 
+	private final boolean closeReader;
+
 	private final MutableObjectId idBuffer = new MutableObjectId();
 
 	private TreeFilter filter;
@@ -208,34 +297,80 @@ public class TreeWalk {
 
 	private boolean postOrderTraversal;
 
-	private int depth;
+	int depth;
 
 	private boolean advance;
 
 	private boolean postChildren;
 
+	private AttributesNodeProvider attributesNodeProvider;
+
 	AbstractTreeIterator currentHead;
+
+	/** Cached attribute for the current entry */
+	private Attributes attrs = null;
+
+	/** Cached attributes handler */
+	private AttributesHandler attributesHandler;
+
+	private Config config;
+
+	private Set<String> filterCommands;
 
 	/**
 	 * Create a new tree walker for a given repository.
 	 *
 	 * @param repo
-	 *            the repository the walker will obtain data from.
+	 *            the repository the walker will obtain data from. An
+	 *            ObjectReader will be created by the walker, and will be closed
+	 *            when the walker is closed.
 	 */
 	public TreeWalk(final Repository repo) {
-		this(repo.newObjectReader());
+		this(repo, repo.newObjectReader(), true);
+	}
+
+	/**
+	 * Create a new tree walker for a given repository.
+	 *
+	 * @param repo
+	 *            the repository the walker will obtain data from. An
+	 *            ObjectReader will be created by the walker, and will be closed
+	 *            when the walker is closed.
+	 * @param or
+	 *            the reader the walker will obtain tree data from. The reader
+	 *            is not closed when the walker is closed.
+	 * @since 4.3
+	 */
+	public TreeWalk(final @Nullable Repository repo, final ObjectReader or) {
+		this(repo, or, false);
 	}
 
 	/**
 	 * Create a new tree walker for a given repository.
 	 *
 	 * @param or
-	 *            the reader the walker will obtain tree data from.
+	 *            the reader the walker will obtain tree data from. The reader
+	 *            is not closed when the walker is closed.
 	 */
 	public TreeWalk(final ObjectReader or) {
+		this(null, or, false);
+	}
+
+	private TreeWalk(final @Nullable Repository repo, final ObjectReader or,
+			final boolean closeReader) {
+		if (repo != null) {
+			config = repo.getConfig();
+			attributesNodeProvider = repo.createAttributesNodeProvider();
+			filterCommands = FilterCommandRegistry
+					.getRegisteredFilterCommands();
+		} else {
+			config = null;
+			attributesNodeProvider = null;
+		}
 		reader = or;
 		filter = TreeFilter.ALL;
 		trees = NO_TREES;
+		this.closeReader = closeReader;
 	}
 
 	/** @return the reader this walker is using to load objects. */
@@ -244,13 +379,26 @@ public class TreeWalk {
 	}
 
 	/**
+	 * @return the {@link OperationType}
+	 * @since 4.3
+	 */
+	public OperationType getOperationType() {
+		return operationType;
+	}
+
+	/**
 	 * Release any resources used by this walker's reader.
 	 * <p>
 	 * A walker that has been released can be used again, but may need to be
 	 * released after the subsequent usage.
+	 *
+	 * @since 4.0
 	 */
-	public void release() {
-		reader.release();
+	@Override
+	public void close() {
+		if (closeReader) {
+			reader.close();
+		}
 	}
 
 	/**
@@ -344,8 +492,131 @@ public class TreeWalk {
 		postOrderTraversal = b;
 	}
 
+	/**
+	 * Sets the {@link AttributesNodeProvider} for this {@link TreeWalk}.
+	 * <p>
+	 * This is a requirement for a correct computation of the git attributes.
+	 * If this {@link TreeWalk} has been built using
+	 * {@link #TreeWalk(Repository)} constructor, the
+	 * {@link AttributesNodeProvider} has already been set. Indeed,the
+	 * {@link Repository} can provide an {@link AttributesNodeProvider} using
+	 * {@link Repository#createAttributesNodeProvider()} method. Otherwise you
+	 * should provide one.
+	 * </p>
+	 *
+	 * @see Repository#createAttributesNodeProvider()
+	 * @param provider
+	 * @since 4.2
+	 */
+	public void setAttributesNodeProvider(AttributesNodeProvider provider) {
+		attributesNodeProvider = provider;
+	}
+
+	/**
+	 * @return the {@link AttributesNodeProvider} for this {@link TreeWalk}.
+	 * @since 4.3
+	 */
+	public AttributesNodeProvider getAttributesNodeProvider() {
+		return attributesNodeProvider;
+	}
+
+	/**
+	 * Retrieve the git attributes for the current entry.
+	 *
+	 * <h4>Git attribute computation</h4>
+	 *
+	 * <ul>
+	 * <li>Get the attributes matching the current path entry from the info file
+	 * (see {@link AttributesNodeProvider#getInfoAttributesNode()}).</li>
+	 * <li>Completes the list of attributes using the .gitattributes files
+	 * located on the current path (the further the directory that contains
+	 * .gitattributes is from the path in question, the lower its precedence).
+	 * For a checkin operation, it will look first on the working tree (if any).
+	 * If there is no attributes file, it will fallback on the index. For a
+	 * checkout operation, it will first use the index entry and then fallback
+	 * on the working tree if none.</li>
+	 * <li>In the end, completes the list of matching attributes using the
+	 * global attribute file define in the configuration (see
+	 * {@link AttributesNodeProvider#getGlobalAttributesNode()})</li>
+	 *
+	 * </ul>
+	 *
+	 *
+	 * <h4>Iterator constraints</h4>
+	 *
+	 * <p>
+	 * In order to have a correct list of attributes for the current entry, this
+	 * {@link TreeWalk} requires to have at least one
+	 * {@link AttributesNodeProvider} and a {@link DirCacheIterator} set up. An
+	 * {@link AttributesNodeProvider} is used to retrieve the attributes from
+	 * the info attributes file and the global attributes file. The
+	 * {@link DirCacheIterator} is used to retrieve the .gitattributes files
+	 * stored in the index. A {@link WorkingTreeIterator} can also be provided
+	 * to access the local version of the .gitattributes files. If none is
+	 * provided it will fallback on the {@link DirCacheIterator}.
+	 * </p>
+	 *
+	 * @return a {@link Set} of {@link Attribute}s that match the current entry.
+	 * @since 4.2
+	 */
+	@Override
+	public Attributes getAttributes() {
+		if (attrs != null)
+			return attrs;
+
+		if (attributesNodeProvider == null) {
+			// The work tree should have a AttributesNodeProvider to be able to
+			// retrieve the info and global attributes node
+			throw new IllegalStateException(
+					"The tree walk should have one AttributesNodeProvider set in order to compute the git attributes."); //$NON-NLS-1$
+		}
+
+		try {
+			// Lazy create the attributesHandler on the first access of
+			// attributes. This requires the info, global and root
+			// attributes nodes
+			if (attributesHandler == null) {
+				attributesHandler = new AttributesHandler(this);
+			}
+			attrs = attributesHandler.getAttributes();
+			return attrs;
+		} catch (IOException e) {
+			throw new JGitInternalException("Error while parsing attributes", //$NON-NLS-1$
+					e);
+		}
+	}
+
+	/**
+	 * @param opType
+	 *            the operationtype (checkin/checkout) which should be used
+	 * @return the EOL stream type of the current entry using the config and
+	 *         {@link #getAttributes()} Note that this method may return null if
+	 *         the {@link TreeWalk} is not based on a working tree
+	 */
+	// TODO(msohn) make this method public in 4.4
+	@Nullable
+	EolStreamType getEolStreamType(OperationType opType) {
+			if (attributesNodeProvider == null || config == null)
+				return null;
+		return EolStreamTypeUtil.detectStreamType(opType,
+					config.get(WorkingTreeOptions.KEY), getAttributes());
+	}
+
+	/**
+	 * @return the EOL stream type of the current entry using the config and
+	 *         {@link #getAttributes()} Note that this method may return null if
+	 *         the {@link TreeWalk} is not based on a working tree
+	 * @since 4.3
+	 */
+	// TODO(msohn) deprecate this method in 4.4
+	public @Nullable EolStreamType getEolStreamType() {
+		return (getEolStreamType(operationType));
+	}
+
 	/** Reset this walker so new tree iterators can be added to it. */
 	public void reset() {
+		attrs = null;
+		attributesHandler = null;
 		trees = NO_TREES;
 		advance = false;
 		depth = 0;
@@ -389,6 +660,7 @@ public class TreeWalk {
 
 		advance = false;
 		depth = 0;
+		attrs = null;
 	}
 
 	/**
@@ -438,6 +710,7 @@ public class TreeWalk {
 		trees = r;
 		advance = false;
 		depth = 0;
+		attrs = null;
 	}
 
 	/**
@@ -480,18 +753,13 @@ public class TreeWalk {
 	 * @param p
 	 *            an iterator to walk over. The iterator should be new, with no
 	 *            parent, and should still be positioned before the first entry.
-	 *            The tree which the iterator operates on must have the same root
-	 *            as other trees in the walk.
-	 *
+	 *            The tree which the iterator operates on must have the same
+	 *            root as other trees in the walk.
 	 * @return position of this tree within the walker.
-	 * @throws CorruptObjectException
-	 *             the iterator was unable to obtain its first entry, due to
-	 *             possible data corruption within the backing data store.
 	 */
-	public int addTree(final AbstractTreeIterator p)
-			throws CorruptObjectException {
-		final int n = trees.length;
-		final AbstractTreeIterator[] newTrees = new AbstractTreeIterator[n + 1];
+	public int addTree(AbstractTreeIterator p) {
+		int n = trees.length;
+		AbstractTreeIterator[] newTrees = new AbstractTreeIterator[n + 1];
 
 		System.arraycopy(trees, 0, newTrees, 0, n);
 		newTrees[n] = p;
@@ -541,6 +809,7 @@ public class TreeWalk {
 			}
 
 			for (;;) {
+				attrs = null;
 				final AbstractTreeIterator t = min();
 				if (t.eof()) {
 					if (depth > 0) {
@@ -557,7 +826,7 @@ public class TreeWalk {
 				}
 
 				currentHead = t;
-				if (!filter.include(this)) {
+				if (filter.matchFilter(this) == 1) {
 					skipEntriesEqual();
 					continue;
 				}
@@ -571,9 +840,26 @@ public class TreeWalk {
 				return true;
 			}
 		} catch (StopWalkException stop) {
-			for (final AbstractTreeIterator t : trees)
-				t.stopWalk();
+			stopWalk();
 			return false;
+		}
+	}
+
+	/**
+	 * Notify iterators the walk is aborting.
+	 * <p>
+	 * Primarily to notify {@link DirCacheBuildIterator} the walk is aborting so
+	 * that it can copy any remaining entries.
+	 *
+	 * @throws IOException
+	 *             if traversal of remaining entries throws an exception during
+	 *             object access. This should never occur as remaining trees
+	 *             should already be in memory, however the methods used to
+	 *             finish traversal are declared to throw IOException.
+	 */
+	void stopWalk() throws IOException {
+		for (AbstractTreeIterator t : trees) {
+			t.stopWalk();
 		}
 	}
 
@@ -630,6 +916,16 @@ public class TreeWalk {
 	 */
 	public FileMode getFileMode(final int nth) {
 		return FileMode.fromBits(getRawMode(nth));
+	}
+
+	/**
+	 * Obtain the {@link FileMode} for the current entry on the currentHead tree
+	 *
+	 * @return mode for the current entry of the currentHead tree.
+	 * @since 4.3
+	 */
+	public FileMode getFileMode() {
+		return FileMode.fromBits(currentHead.mode);
 	}
 
 	/**
@@ -766,18 +1062,75 @@ public class TreeWalk {
 	/**
 	 * Test if the supplied path matches the current entry's path.
 	 * <p>
-	 * This method tests that the supplied path is exactly equal to the current
-	 * entry, or is one of its parent directories. It is faster to use this
-	 * method then to use {@link #getPathString()} to first create a String
+	 * This method detects if the supplied path is equal to, a subtree of, or
+	 * not similar at all to the current entry. It is faster to use this
+	 * method than to use {@link #getPathString()} to first create a String
 	 * object, then test <code>startsWith</code> or some other type of string
 	 * match function.
+	 * <p>
+	 * If the current entry is a subtree, then all paths within the subtree
+	 * are considered to match it.
 	 *
 	 * @param p
 	 *            path buffer to test. Callers should ensure the path does not
 	 *            end with '/' prior to invocation.
 	 * @param pLen
 	 *            number of bytes from <code>buf</code> to test.
-	 * @return < 0 if p is before the current path; 0 if p matches the current
+	 * @return -1 if the current path is a parent to p; 0 if p matches the current
+	 *         path; 1 if the current path is different and will never match
+	 *         again on this tree walk.
+	 * @since 4.7
+	 */
+	public int isPathMatch(final byte[] p, final int pLen) {
+		final AbstractTreeIterator t = currentHead;
+		final byte[] c = t.path;
+		final int cLen = t.pathLen;
+		int ci;
+
+		for (ci = 0; ci < cLen && ci < pLen; ci++) {
+			final int c_value = (c[ci] & 0xff) - (p[ci] & 0xff);
+			if (c_value != 0) {
+				// Paths do not and will never match
+				return 1;
+			}
+		}
+
+		if (ci < cLen) {
+			// Ran out of pattern but we still had current data.
+			// If c[ci] == '/' then pattern matches the subtree.
+			// Otherwise it is a partial match == miss
+			return c[ci] == '/' ? 0 : 1;
+		}
+
+		if (ci < pLen) {
+			// Ran out of current, but we still have pattern data.
+			// If p[ci] == '/' then this subtree is a parent in the pattern,
+			// otherwise it's a miss.
+			return p[ci] == '/' && FileMode.TREE.equals(t.mode) ? -1 : 1;
+		}
+
+		// Both strings are identical.
+		return 0;
+	}
+
+	/**
+	 * Test if the supplied path matches the current entry's path.
+	 * <p>
+	 * This method tests that the supplied path is exactly equal to the current
+	 * entry or is one of its parent directories. It is faster to use this
+	 * method then to use {@link #getPathString()} to first create a String
+	 * object, then test <code>startsWith</code> or some other type of string
+	 * match function.
+	 * <p>
+	 * If the current entry is a subtree, then all paths within the subtree
+	 * are considered to match it.
+	 *
+	 * @param p
+	 *            path buffer to test. Callers should ensure the path does not
+	 *            end with '/' prior to invocation.
+	 * @param pLen
+	 *            number of bytes from <code>buf</code> to test.
+	 * @return &lt; 0 if p is before the current path; 0 if p matches the current
 	 *         path; 1 if the current path is past p and p will never match
 	 *         again on this tree walk.
 	 */
@@ -806,7 +1159,7 @@ public class TreeWalk {
 			// If p[ci] == '/' then pattern matches this subtree,
 			// otherwise we cannot be certain so we return -1.
 			//
-			return p[ci] == '/' ? 0 : -1;
+			return p[ci] == '/' && FileMode.TREE.equals(t.mode) ? 0 : -1;
 		}
 
 		// Both strings are identical.
@@ -835,13 +1188,17 @@ public class TreeWalk {
 		final AbstractTreeIterator t = currentHead;
 		final byte[] c = t.path;
 		final int cLen = t.pathLen;
-		int ci;
 
-		for (ci = 1; ci < cLen && ci < pLen; ci++) {
-			if (c[cLen-ci] != p[pLen-ci])
+		for (int i = 1; i <= pLen; i++) {
+			// Pattern longer than current path
+			if (i > cLen)
+				return false;
+			// Current path doesn't match pattern
+			if (c[cLen - i] != p[pLen - i])
 				return false;
 		}
 
+		// Whole pattern tested -> matches
 		return true;
 	}
 
@@ -899,12 +1256,18 @@ public class TreeWalk {
 	 */
 	public void enterSubtree() throws MissingObjectException,
 			IncorrectObjectTypeException, CorruptObjectException, IOException {
+		attrs = null;
 		final AbstractTreeIterator ch = currentHead;
 		final AbstractTreeIterator[] tmp = new AbstractTreeIterator[trees.length];
 		for (int i = 0; i < trees.length; i++) {
 			final AbstractTreeIterator t = trees[i];
 			final AbstractTreeIterator n;
-			if (t.matches == ch && !t.eof() && FileMode.TREE.equals(t.mode))
+			// If we find a GITLINK when attempting to enter a subtree, then the
+			// GITLINK must exist as a TREE in the index, meaning the working tree
+			// entry should be treated as a TREE
+			if (t.matches == ch && !t.eof() &&
+					(FileMode.TREE.equals(t.mode)
+							|| (FileMode.GITLINK.equals(t.mode) && t.isWorkTree())))
 				n = t.createSubtreeIterator(reader, idBuffer);
 			else
 				n = t.createEmptyTreeIterator();
@@ -963,7 +1326,7 @@ public class TreeWalk {
 		}
 	}
 
-	private void exitSubtree() {
+	void exitSubtree() {
 		depth--;
 		for (int i = 0; i < trees.length; i++)
 			trees[i] = trees[i].parent;
@@ -991,5 +1354,96 @@ public class TreeWalk {
 
 	static String pathOf(final byte[] buf, int pos, int end) {
 		return RawParseUtils.decode(Constants.CHARSET, buf, pos, end);
+	}
+
+	/**
+	 * @param type
+	 *            of the tree to be queried
+	 * @return the tree of that type or null if none is present
+	 * @since 4.3
+	 */
+	public <T extends AbstractTreeIterator> T getTree(
+			Class<T> type) {
+		for (int i = 0; i < trees.length; i++) {
+			AbstractTreeIterator tree = trees[i];
+			if (type.isInstance(tree)) {
+				return type.cast(tree);
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Inspect config and attributes to return a filtercommand applicable for
+	 * the current path
+	 *
+	 * @param filterCommandType
+	 *            which type of filterCommand should be executed. E.g. "clean",
+	 *            "smudge"
+	 * @return a filter command
+	 * @throws IOException
+	 * @since 4.2
+	 */
+	public String getFilterCommand(String filterCommandType)
+			throws IOException {
+		Attributes attributes = getAttributes();
+
+		Attribute f = attributes.get(Constants.ATTR_FILTER);
+		if (f == null) {
+			return null;
+		}
+		String filterValue = f.getValue();
+		if (filterValue == null) {
+			return null;
+		}
+
+		String filterCommand = getFilterCommandDefinition(filterValue,
+				filterCommandType);
+		if (filterCommand == null) {
+			return null;
+		}
+		return filterCommand.replaceAll("%f", //$NON-NLS-1$
+				QuotedString.BOURNE.quote((getPathString())));
+	}
+
+	/**
+	 * Get the filter command how it is defined in gitconfig. The returned
+	 * string may contain "%f" which needs to be replaced by the current path
+	 * before executing the filter command. These filter definitions are cached
+	 * for better performance.
+	 *
+	 * @param filterDriverName
+	 *            The name of the filter driver as it is referenced in the
+	 *            gitattributes file. E.g. "lfs". For each filter driver there
+	 *            may be many commands defined in the .gitconfig
+	 * @param filterCommandType
+	 *            The type of the filter command for a specific filter driver.
+	 *            May be "clean" or "smudge".
+	 * @return the definition of the command to be executed for this filter
+	 *         driver and filter command
+	 */
+	private String getFilterCommandDefinition(String filterDriverName,
+			String filterCommandType) {
+		String key = filterDriverName + "." + filterCommandType; //$NON-NLS-1$
+		String filterCommand = filterCommandsByNameDotType.get(key);
+		if (filterCommand != null)
+			return filterCommand;
+		filterCommand = config.getString(ConfigConstants.CONFIG_FILTER_SECTION,
+				filterDriverName, filterCommandType);
+		boolean useBuiltin = config.getBoolean(
+				ConfigConstants.CONFIG_FILTER_SECTION,
+				filterDriverName, ConfigConstants.CONFIG_KEY_USEJGITBUILTIN, false);
+		if (useBuiltin) {
+			String builtinFilterCommand = Constants.BUILTIN_FILTER_PREFIX
+					+ filterDriverName + '/' + filterCommandType;
+			if (filterCommands != null
+					&& filterCommands.contains(builtinFilterCommand)) {
+				filterCommand = builtinFilterCommand;
+			}
+		}
+		if (filterCommand != null) {
+			filterCommandsByNameDotType.put(key, filterCommand);
+		}
+		return filterCommand;
 	}
 }

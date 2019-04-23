@@ -95,9 +95,9 @@ public class GitFilter extends MetaFilter {
 
 	private ReceivePackFactory<HttpServletRequest> receivePackFactory = new DefaultReceivePackFactory();
 
-	private final List<Filter> uploadPackFilters = new LinkedList<Filter>();
+	private final List<Filter> uploadPackFilters = new LinkedList<>();
 
-	private final List<Filter> receivePackFilters = new LinkedList<Filter>();
+	private final List<Filter> receivePackFilters = new LinkedList<>();
 
 	/**
 	 * New servlet that will load its base directory from {@code web.xml}.
@@ -225,7 +225,7 @@ public class GitFilter extends MetaFilter {
 			refs = refs.through(new AsIsFileFilter(asIs));
 			refs.with(new InfoRefsServlet());
 		} else
-			refs.with(new ErrorServlet(HttpServletResponse.SC_FORBIDDEN));
+			refs.with(new ErrorServlet(HttpServletResponse.SC_NOT_ACCEPTABLE));
 
 		if (asIs != AsIsFileService.DISABLED) {
 			final IsLocalFilter mustBeLocal = new IsLocalFilter();

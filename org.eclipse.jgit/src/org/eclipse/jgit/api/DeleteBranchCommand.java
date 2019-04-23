@@ -79,7 +79,7 @@ import org.eclipse.jgit.revwalk.RevWalk;
  *      >Git documentation about Branch</a>
  */
 public class DeleteBranchCommand extends GitCommand<List<String>> {
-	private final Set<String> branchNames = new HashSet<String>();
+	private final Set<String> branchNames = new HashSet<>();
 
 	private boolean force;
 
@@ -97,10 +97,11 @@ public class DeleteBranchCommand extends GitCommand<List<String>> {
 	 * @throws CannotDeleteCurrentBranchException
 	 * @return the list with the (full) names of the deleted branches
 	 */
+	@Override
 	public List<String> call() throws GitAPIException,
 			NotMergedException, CannotDeleteCurrentBranchException {
 		checkCallable();
-		List<String> result = new ArrayList<String>();
+		List<String> result = new ArrayList<>();
 		if (branchNames.isEmpty())
 			return result;
 		try {
@@ -108,18 +109,21 @@ public class DeleteBranchCommand extends GitCommand<List<String>> {
 			if (!force) {
 				// check if the branches to be deleted
 				// are all merged into the current branch
-				RevWalk walk = new RevWalk(repo);
-				RevCommit tip = walk.parseCommit(repo.resolve(Constants.HEAD));
-				for (String branchName : branchNames) {
-					if (branchName == null)
-						continue;
-					Ref currentRef = repo.getRef(branchName);
-					if (currentRef == null)
-						continue;
+				try (RevWalk walk = new RevWalk(repo)) {
+					RevCommit tip = walk
+							.parseCommit(repo.resolve(Constants.HEAD));
+					for (String branchName : branchNames) {
+						if (branchName == null)
+							continue;
+						Ref currentRef = repo.findRef(branchName);
+						if (currentRef == null)
+							continue;
 
-					RevCommit base = walk.parseCommit(repo.resolve(branchName));
-					if (!walk.isMergedInto(base, tip)) {
-						throw new NotMergedException();
+						RevCommit base = walk
+								.parseCommit(repo.resolve(branchName));
+						if (!walk.isMergedInto(base, tip)) {
+							throw new NotMergedException();
+						}
 					}
 				}
 			}
@@ -127,7 +131,7 @@ public class DeleteBranchCommand extends GitCommand<List<String>> {
 			for (String branchName : branchNames) {
 				if (branchName == null)
 					continue;
-				Ref currentRef = repo.getRef(branchName);
+				Ref currentRef = repo.findRef(branchName);
 				if (currentRef == null)
 					continue;
 				String fullName = currentRef.getName();
@@ -138,7 +142,7 @@ public class DeleteBranchCommand extends GitCommand<List<String>> {
 											JGitText.get().cannotDeleteCheckedOutBranch,
 											branchName));
 				RefUpdate update = repo.updateRef(fullName);
-				update.setRefLogMessage("branch deleted", false);
+				update.setRefLogMessage("branch deleted", false); //$NON-NLS-1$
 				update.setForceUpdate(true);
 				Result deleteResult = update.delete();
 

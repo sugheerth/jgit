@@ -43,18 +43,20 @@
 
 package org.eclipse.jgit.revwalk;
 
+import java.util.Locale;
+
 import org.eclipse.jgit.lib.Constants;
 
 /** Case insensitive key for a {@link FooterLine}. */
 public final class FooterKey {
 	/** Standard {@code Signed-off-by} */
-	public static final FooterKey SIGNED_OFF_BY = new FooterKey("Signed-off-by");
+	public static final FooterKey SIGNED_OFF_BY = new FooterKey("Signed-off-by"); //$NON-NLS-1$
 
 	/** Standard {@code Acked-by} */
-	public static final FooterKey ACKED_BY = new FooterKey("Acked-by");
+	public static final FooterKey ACKED_BY = new FooterKey("Acked-by"); //$NON-NLS-1$
 
 	/** Standard {@code CC} */
-	public static final FooterKey CC = new FooterKey("CC");
+	public static final FooterKey CC = new FooterKey("CC"); //$NON-NLS-1$
 
 	private final String name;
 
@@ -68,7 +70,7 @@ public final class FooterKey {
 	 */
 	public FooterKey(final String keyName) {
 		name = keyName;
-		raw = Constants.encode(keyName.toLowerCase());
+		raw = Constants.encode(keyName.toLowerCase(Locale.ROOT));
 	}
 
 	/** @return name of this footer line. */
@@ -76,6 +78,7 @@ public final class FooterKey {
 		return name;
 	}
 
+	@SuppressWarnings("nls")
 	@Override
 	public String toString() {
 		return "FooterKey[" + name + "]";

@@ -81,14 +81,14 @@ public class AddNoteCommand extends GitCommand<Note> {
 		super(repo);
 	}
 
+	@Override
 	public Note call() throws GitAPIException {
 		checkCallable();
-		RevWalk walk = new RevWalk(repo);
-		ObjectInserter inserter = repo.newObjectInserter();
 		NoteMap map = NoteMap.newEmptyMap();
 		RevCommit notesCommit = null;
-		try {
-			Ref ref = repo.getRef(notesRef);
+		try (RevWalk walk = new RevWalk(repo);
+				ObjectInserter inserter = repo.newObjectInserter()) {
+			Ref ref = repo.findRef(notesRef);
 			// if we have a notes ref, use it
 			if (ref != null) {
 				notesCommit = walk.parseCommit(ref.getObjectId());
@@ -96,13 +96,10 @@ public class AddNoteCommand extends GitCommand<Note> {
 			}
 			map.set(id, message, inserter);
 			commitNoteMap(walk, map, notesCommit, inserter,
-					"Notes added by 'git notes add'");
+					"Notes added by 'git notes add'"); //$NON-NLS-1$
 			return map.getNote(id);
 		} catch (IOException e) {
 			throw new JGitInternalException(e.getMessage(), e);
-		} finally {
-			inserter.release();
-			walk.release();
 		}
 	}
 

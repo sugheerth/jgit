@@ -72,9 +72,8 @@ import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.RefUpdate;
 import org.eclipse.jgit.lib.Repository;
+import org.eclipse.jgit.lib.StoredConfig;
 import org.eclipse.jgit.revwalk.RevCommit;
-import org.eclipse.jgit.storage.file.FileBasedConfig;
-import org.eclipse.jgit.storage.file.FileRepository;
 import org.eclipse.jgit.transport.FetchConnection;
 import org.eclipse.jgit.transport.Transport;
 import org.eclipse.jgit.transport.URIish;
@@ -85,7 +84,7 @@ import org.junit.Before;
 import org.junit.Test;
 
 public class HttpClientTests extends HttpTestCase {
-	private TestRepository<FileRepository> remoteRepository;
+	private TestRepository<Repository> remoteRepository;
 
 	private URIish dumbAuthNoneURI;
 
@@ -95,6 +94,7 @@ public class HttpClientTests extends HttpTestCase {
 
 	private URIish smartAuthBasicURI;
 
+	@Override
 	@Before
 	public void setUp() throws Exception {
 		super.setUp();
@@ -124,17 +124,20 @@ public class HttpClientTests extends HttpTestCase {
 
 		ServletContextHandler ctx = server.addContext(path);
 		ctx.setResourceBase(base.toString());
-		ctx.addServlet(DefaultServlet.class, "/");
+		ServletHolder holder = ctx.addServlet(DefaultServlet.class, "/");
+		// The tmp directory is symlinked on OS X
+		holder.setInitParameter("aliases", "true");
 		return ctx;
 	}
 
 	private ServletContextHandler smart(final String path) {
 		GitServlet gs = new GitServlet();
 		gs.setRepositoryResolver(new RepositoryResolver<HttpServletRequest>() {
+			@Override
 			public Repository open(HttpServletRequest req, String name)
 					throws RepositoryNotFoundException,
 					ServiceNotEnabledException {
-				final FileRepository db = remoteRepository.getRepository();
+				final Repository db = remoteRepository.getRepository();
 				if (!name.equals(nameOf(db)))
 					throw new RepositoryNotFoundException(name);
 
@@ -148,7 +151,7 @@ public class HttpClientTests extends HttpTestCase {
 		return ctx;
 	}
 
-	private static String nameOf(final FileRepository db) {
+	private static String nameOf(final Repository db) {
 		return db.getDirectory().getName();
 	}
 
@@ -156,8 +159,7 @@ public class HttpClientTests extends HttpTestCase {
 	public void testRepositoryNotFound_Dumb() throws Exception {
 		URIish uri = toURIish("/dumb.none/not-found");
 		Repository dst = createBareRepository();
-		Transport t = Transport.open(dst, uri);
-		try {
+		try (Transport t = Transport.open(dst, uri)) {
 			try {
 				t.openFetch();
 				fail("connection opened to not found repository");
@@ -166,8 +168,6 @@ public class HttpClientTests extends HttpTestCase {
 						+ "/info/refs?service=git-upload-pack not found";
 				assertEquals(exp, err.getMessage());
 			}
-		} finally {
-			t.close();
 		}
 	}
 
@@ -175,8 +175,7 @@ public class HttpClientTests extends HttpTestCase {
 	public void testRepositoryNotFound_Smart() throws Exception {
 		URIish uri = toURIish("/smart.none/not-found");
 		Repository dst = createBareRepository();
-		Transport t = Transport.open(dst, uri);
-		try {
+		try (Transport t = Transport.open(dst, uri)) {
 			try {
 				t.openFetch();
 				fail("connection opened to not found repository");
@@ -185,8 +184,6 @@ public class HttpClientTests extends HttpTestCase {
 						+ "/info/refs?service=git-upload-pack not found";
 				assertEquals(exp, err.getMessage());
 			}
-		} finally {
-			t.close();
 		}
 	}
 
@@ -200,16 +197,9 @@ public class HttpClientTests extends HttpTestCase {
 
 		Repository dst = createBareRepository();
 		Ref head;
-		Transport t = Transport.open(dst, dumbAuthNoneURI);
-		try {
-			FetchConnection c = t.openFetch();
-			try {
-				head = c.getRef(Constants.HEAD);
-			} finally {
-				c.close();
-			}
-		} finally {
-			t.close();
+		try (Transport t = Transport.open(dst, dumbAuthNoneURI);
+				FetchConnection c = t.openFetch()) {
+			head = c.getRef(Constants.HEAD);
 		}
 		assertNotNull("has " + Constants.HEAD, head);
 		assertEquals(Q, head.getObjectId());
@@ -217,23 +207,16 @@ public class HttpClientTests extends HttpTestCase {
 
 	@Test
 	public void testListRemote_Dumb_NoHEAD() throws Exception {
-		FileRepository src = remoteRepository.getRepository();
+		Repository src = remoteRepository.getRepository();
 		File headref = new File(src.getDirectory(), Constants.HEAD);
 		assertTrue("HEAD used to be present", headref.delete());
 		assertFalse("HEAD is gone", headref.exists());
 
 		Repository dst = createBareRepository();
 		Ref head;
-		Transport t = Transport.open(dst, dumbAuthNoneURI);
-		try {
-			FetchConnection c = t.openFetch();
-			try {
-				head = c.getRef(Constants.HEAD);
-			} finally {
-				c.close();
-			}
-		} finally {
-			t.close();
+		try (Transport t = Transport.open(dst, dumbAuthNoneURI);
+				FetchConnection c = t.openFetch()) {
+			head = c.getRef(Constants.HEAD);
 		}
 		assertNull("has no " + Constants.HEAD, head);
 	}
@@ -248,16 +231,9 @@ public class HttpClientTests extends HttpTestCase {
 
 		Repository dst = createBareRepository();
 		Ref head;
-		Transport t = Transport.open(dst, smartAuthNoneURI);
-		try {
-			FetchConnection c = t.openFetch();
-			try {
-				head = c.getRef(Constants.HEAD);
-			} finally {
-				c.close();
-			}
-		} finally {
-			t.close();
+		try (Transport t = Transport.open(dst, smartAuthNoneURI);
+				FetchConnection c = t.openFetch()) {
+			head = c.getRef(Constants.HEAD);
 		}
 		assertNotNull("has " + Constants.HEAD, head);
 		assertEquals(Q, head.getObjectId());
@@ -267,16 +243,13 @@ public class HttpClientTests extends HttpTestCase {
 	public void testListRemote_Smart_WithQueryParameters() throws Exception {
 		URIish myURI = toURIish("/snone/do?r=1&p=test.git");
 		Repository dst = createBareRepository();
-		Transport t = Transport.open(dst, myURI);
-		try {
+		try (Transport t = Transport.open(dst, myURI)) {
 			try {
 				t.openFetch();
 				fail("test did not fail to find repository as expected");
 			} catch (NoRemoteRepositoryException err) {
 				// expected
 			}
-		} finally {
-			t.close();
 		}
 
 		List<AccessEvent> requests = getRequests();
@@ -295,84 +268,81 @@ public class HttpClientTests extends HttpTestCase {
 	@Test
 	public void testListRemote_Dumb_NeedsAuth() throws Exception {
 		Repository dst = createBareRepository();
-		Transport t = Transport.open(dst, dumbAuthBasicURI);
-		try {
+		try (Transport t = Transport.open(dst, dumbAuthBasicURI)) {
 			try {
 				t.openFetch();
 				fail("connection opened even info/refs needs auth basic");
 			} catch (TransportException err) {
 				String exp = dumbAuthBasicURI + ": "
-						+ JGitText.get().notAuthorized;
+						+ JGitText.get().noCredentialsProvider;
 				assertEquals(exp, err.getMessage());
 			}
-		} finally {
-			t.close();
 		}
 	}
 
 	@Test
 	public void testListRemote_Dumb_Auth() throws Exception {
 		Repository dst = createBareRepository();
-		Transport t = Transport.open(dst, dumbAuthBasicURI);
-		t.setCredentialsProvider(new UsernamePasswordCredentialsProvider(
-				AppServer.username, AppServer.password));
-		try {
-			t.openFetch();
-		} finally {
-			t.close();
+		try (Transport t = Transport.open(dst, dumbAuthBasicURI)) {
+			t.setCredentialsProvider(new UsernamePasswordCredentialsProvider(
+					AppServer.username, AppServer.password));
+			t.openFetch().close();
 		}
-		t = Transport.open(dst, dumbAuthBasicURI);
-		t.setCredentialsProvider(new UsernamePasswordCredentialsProvider(
-				AppServer.username, ""));
-		try {
-			t.openFetch();
-			fail("connection opened even info/refs needs auth basic and we provide wrong password");
-		} catch (TransportException err) {
-			String exp = dumbAuthBasicURI + ": "
-					+ JGitText.get().notAuthorized;
-			assertEquals(exp, err.getMessage());
-		} finally {
-			t.close();
+		try (Transport t = Transport.open(dst, dumbAuthBasicURI)) {
+			t.setCredentialsProvider(new UsernamePasswordCredentialsProvider(
+					AppServer.username, ""));
+			try {
+				t.openFetch();
+				fail("connection opened even info/refs needs auth basic and we provide wrong password");
+			} catch (TransportException err) {
+				String exp = dumbAuthBasicURI + ": "
+						+ JGitText.get().notAuthorized;
+				assertEquals(exp, err.getMessage());
+			}
 		}
 	}
 
 	@Test
 	public void testListRemote_Smart_UploadPackNeedsAuth() throws Exception {
 		Repository dst = createBareRepository();
-		Transport t = Transport.open(dst, smartAuthBasicURI);
-		try {
+		try (Transport t = Transport.open(dst, smartAuthBasicURI)) {
 			try {
 				t.openFetch();
 				fail("connection opened even though service disabled");
 			} catch (TransportException err) {
 				String exp = smartAuthBasicURI + ": "
-						+ JGitText.get().notAuthorized;
+						+ JGitText.get().noCredentialsProvider;
 				assertEquals(exp, err.getMessage());
 			}
-		} finally {
-			t.close();
 		}
 	}
 
 	@Test
 	public void testListRemote_Smart_UploadPackDisabled() throws Exception {
-		FileRepository src = remoteRepository.getRepository();
-		final FileBasedConfig cfg = src.getConfig();
+		Repository src = remoteRepository.getRepository();
+		final StoredConfig cfg = src.getConfig();
 		cfg.setBoolean("http", null, "uploadpack", false);
 		cfg.save();
 
 		Repository dst = createBareRepository();
-		Transport t = Transport.open(dst, smartAuthNoneURI);
-		try {
+		try (Transport t = Transport.open(dst, smartAuthNoneURI)) {
 			try {
 				t.openFetch();
 				fail("connection opened even though service disabled");
 			} catch (TransportException err) {
-				String exp = smartAuthNoneURI + ": Git access forbidden";
+				String exp = smartAuthNoneURI + ": "
+						+ JGitText.get().serviceNotEnabledNoName;
 				assertEquals(exp, err.getMessage());
 			}
-		} finally {
-			t.close();
+		}
+	}
+
+	@Test
+	public void testListRemoteWithoutLocalRepository() throws Exception {
+		try (Transport t = Transport.open(smartAuthNoneURI);
+				FetchConnection c = t.openFetch()) {
+			Ref head = c.getRef(Constants.HEAD);
+			assertNotNull(head);
 		}
 	}
 }

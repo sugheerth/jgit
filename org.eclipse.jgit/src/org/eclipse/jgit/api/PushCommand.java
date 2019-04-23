@@ -43,17 +43,23 @@
 package org.eclipse.jgit.api;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.URISyntaxException;
 import java.text.MessageFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.api.errors.InvalidRemoteException;
 import org.eclipse.jgit.api.errors.JGitInternalException;
 import org.eclipse.jgit.errors.NotSupportedException;
+import org.eclipse.jgit.errors.TooLargeObjectInPackException;
+import org.eclipse.jgit.errors.TooLargePackException;
 import org.eclipse.jgit.errors.TransportException;
 import org.eclipse.jgit.internal.JGitText;
 import org.eclipse.jgit.lib.Constants;
@@ -62,6 +68,7 @@ import org.eclipse.jgit.lib.ProgressMonitor;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.transport.PushResult;
+import org.eclipse.jgit.transport.RefLeaseSpec;
 import org.eclipse.jgit.transport.RefSpec;
 import org.eclipse.jgit.transport.RemoteConfig;
 import org.eclipse.jgit.transport.RemoteRefUpdate;
@@ -82,22 +89,28 @@ public class PushCommand extends
 
 	private final List<RefSpec> refSpecs;
 
+	private final Map<String, RefLeaseSpec> refLeaseSpecs;
+
 	private ProgressMonitor monitor = NullProgressMonitor.INSTANCE;
 
 	private String receivePack = RemoteConfig.DEFAULT_RECEIVE_PACK;
 
 	private boolean dryRun;
-
+	private boolean atomic;
 	private boolean force;
-
 	private boolean thin = Transport.DEFAULT_PUSH_THIN;
+
+	private OutputStream out;
+
+	private List<String> pushOptions;
 
 	/**
 	 * @param repo
 	 */
 	protected PushCommand(Repository repo) {
 		super(repo);
-		refSpecs = new ArrayList<RefSpec>(3);
+		refSpecs = new ArrayList<>(3);
+		refLeaseSpecs = new HashMap<>();
 	}
 
 	/**
@@ -113,12 +126,13 @@ public class PushCommand extends
 	 *             when an error occurs with the transport
 	 * @throws GitAPIException
 	 */
+	@Override
 	public Iterable<PushResult> call() throws GitAPIException,
 			InvalidRemoteException,
 			org.eclipse.jgit.api.errors.TransportException {
 		checkCallable();
 
-		ArrayList<PushResult> pushResults = new ArrayList<PushResult>(3);
+		ArrayList<PushResult> pushResults = new ArrayList<>(3);
 
 		try {
 			if (refSpecs.isEmpty()) {
@@ -127,7 +141,7 @@ public class PushCommand extends
 				refSpecs.addAll(config.getPushRefSpecs());
 			}
 			if (refSpecs.isEmpty()) {
-				Ref head = repo.getRef(Constants.HEAD);
+				Ref head = repo.exactRef(Constants.HEAD);
 				if (head != null && head.isSymbolic())
 					refSpecs.add(new RefSpec(head.getLeaf().getName()));
 			}
@@ -141,18 +155,26 @@ public class PushCommand extends
 			transports = Transport.openAll(repo, remote, Transport.Operation.PUSH);
 			for (final Transport transport : transports) {
 				transport.setPushThin(thin);
+				transport.setPushAtomic(atomic);
 				if (receivePack != null)
 					transport.setOptionReceivePack(receivePack);
 				transport.setDryRun(dryRun);
+				transport.setPushOptions(pushOptions);
 				configure(transport);
 
 				final Collection<RemoteRefUpdate> toPush = transport
-						.findRemoteRefUpdatesFor(refSpecs);
+						.findRemoteRefUpdatesFor(refSpecs, refLeaseSpecs);
 
 				try {
-					PushResult result = transport.push(monitor, toPush);
+					PushResult result = transport.push(monitor, toPush, out);
 					pushResults.add(result);
 
+				} catch (TooLargePackException e) {
+					throw new org.eclipse.jgit.api.errors.TooLargePackException(
+							e.getMessage(), e);
+				} catch (TooLargeObjectInPackException e) {
+					throw new org.eclipse.jgit.api.errors.TooLargeObjectInPackException(
+							e.getMessage(), e);
 				} catch (TransportException e) {
 					throw new org.eclipse.jgit.api.errors.TransportException(
 							e.getMessage(), e);
@@ -178,7 +200,6 @@ public class PushCommand extends
 		}
 
 		return pushResults;
-
 	}
 
 	/**
@@ -250,7 +271,47 @@ public class PushCommand extends
 	 */
 	public PushCommand setProgressMonitor(ProgressMonitor monitor) {
 		checkCallable();
+		if (monitor == null) {
+			monitor = NullProgressMonitor.INSTANCE;
+		}
 		this.monitor = monitor;
+		return this;
+	}
+
+	/**
+	 * @return the ref lease specs
+	 * @since 4.7
+	 */
+	public List<RefLeaseSpec> getRefLeaseSpecs() {
+		return new ArrayList<>(refLeaseSpecs.values());
+	}
+
+	/**
+	 * The ref lease specs to be used in the push operation,
+	 * for a force-with-lease push operation.
+	 *
+	 * @param specs
+	 * @return {@code this}
+	 * @since 4.7
+	 */
+	public PushCommand setRefLeaseSpecs(RefLeaseSpec... specs) {
+		return setRefLeaseSpecs(Arrays.asList(specs));
+	}
+
+	/**
+	 * The ref lease specs to be used in the push operation,
+	 * for a force-with-lease push operation.
+	 *
+	 * @param specs
+	 * @return {@code this}
+	 * @since 4.7
+	 */
+	public PushCommand setRefLeaseSpecs(List<RefLeaseSpec> specs) {
+		checkCallable();
+		this.refLeaseSpecs.clear();
+		for (RefLeaseSpec spec : specs) {
+			refLeaseSpecs.put(spec.getRef(), spec);
+		}
 		return this;
 	}
 
@@ -334,7 +395,7 @@ public class PushCommand extends
 		} else {
 			Ref src;
 			try {
-				src = repo.getRef(nameOrSpec);
+				src = repo.findRef(nameOrSpec);
 			} catch (IOException e) {
 				throw new JGitInternalException(
 						JGitText.get().exceptionCaughtDuringExecutionOfPushCommand,
@@ -387,6 +448,29 @@ public class PushCommand extends
 	}
 
 	/**
+	 * @return true if all-or-nothing behavior is requested.
+	 * @since 4.2
+	 */
+	public boolean isAtomic() {
+		return atomic;
+	}
+
+	/**
+	 * Requests atomic push (all references updated, or no updates).
+	 *
+	 * Default setting is false.
+	 *
+	 * @param atomic
+	 * @return {@code this}
+	 * @since 4.2
+	 */
+	public PushCommand setAtomic(boolean atomic) {
+		checkCallable();
+		this.atomic = atomic;
+		return this;
+	}
+
+	/**
 	 * @return the force preference for push operation
 	 */
 	public boolean isForce() {
@@ -402,6 +486,38 @@ public class PushCommand extends
 	public PushCommand setForce(boolean force) {
 		checkCallable();
 		this.force = force;
+		return this;
+	}
+
+	/**
+	 * Sets the output stream to write sideband messages to
+	 *
+	 * @param out
+	 * @return {@code this}
+	 * @since 3.0
+	 */
+	public PushCommand setOutputStream(OutputStream out) {
+		this.out = out;
+		return this;
+	}
+
+	/**
+	 * @return the option strings associated with the push operation
+	 * @since 4.5
+	 */
+	public List<String> getPushOptions() {
+		return pushOptions;
+	}
+
+	/**
+	 * Sets the option strings associated with the push operation.
+	 *
+	 * @param pushOptions
+	 * @return {@code this}
+	 * @since 4.5
+	 */
+	public PushCommand setPushOptions(List<String> pushOptions) {
+		this.pushOptions = pushOptions;
 		return this;
 	}
 }

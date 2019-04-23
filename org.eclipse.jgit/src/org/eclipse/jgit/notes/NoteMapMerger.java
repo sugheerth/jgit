@@ -135,8 +135,8 @@ public class NoteMapMerger {
 			inserter.flush();
 			return NoteMap.newMap(mergedBucket, reader);
 		} finally {
-			reader.release();
-			inserter.release();
+			reader.close();
+			inserter.close();
 		}
 	}
 
@@ -329,7 +329,7 @@ public class NoteMapMerger {
 			throw new NotesMergeConflictException(baseList, oursList,
 					theirsList);
 		ObjectId resultTreeId = m.getResultTreeId();
-		AbbreviatedObjectId none = AbbreviatedObjectId.fromString("");
+		AbbreviatedObjectId none = AbbreviatedObjectId.fromString(""); //$NON-NLS-1$
 		return NoteParser.parse(none, resultTreeId, reader).nonNotes;
 	}
 

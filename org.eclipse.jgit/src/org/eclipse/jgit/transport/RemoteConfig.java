@@ -67,37 +67,37 @@ import org.eclipse.jgit.lib.Config;
 public class RemoteConfig implements Serializable {
 	private static final long serialVersionUID = 1L;
 
-	private static final String SECTION = "remote";
+	private static final String SECTION = "remote"; //$NON-NLS-1$
 
-	private static final String KEY_URL = "url";
+	private static final String KEY_URL = "url"; //$NON-NLS-1$
 
-	private static final String KEY_PUSHURL = "pushurl";
+	private static final String KEY_PUSHURL = "pushurl"; //$NON-NLS-1$
 
-	private static final String KEY_FETCH = "fetch";
+	private static final String KEY_FETCH = "fetch"; //$NON-NLS-1$
 
-	private static final String KEY_PUSH = "push";
+	private static final String KEY_PUSH = "push"; //$NON-NLS-1$
 
-	private static final String KEY_UPLOADPACK = "uploadpack";
+	private static final String KEY_UPLOADPACK = "uploadpack"; //$NON-NLS-1$
 
-	private static final String KEY_RECEIVEPACK = "receivepack";
+	private static final String KEY_RECEIVEPACK = "receivepack"; //$NON-NLS-1$
 
-	private static final String KEY_TAGOPT = "tagopt";
+	private static final String KEY_TAGOPT = "tagopt"; //$NON-NLS-1$
 
-	private static final String KEY_MIRROR = "mirror";
+	private static final String KEY_MIRROR = "mirror"; //$NON-NLS-1$
 
-	private static final String KEY_TIMEOUT = "timeout";
+	private static final String KEY_TIMEOUT = "timeout"; //$NON-NLS-1$
 
-	private static final String KEY_INSTEADOF = "insteadof";
+	private static final String KEY_INSTEADOF = "insteadof"; //$NON-NLS-1$
 
-	private static final String KEY_PUSHINSTEADOF = "pushinsteadof";
+	private static final String KEY_PUSHINSTEADOF = "pushinsteadof"; //$NON-NLS-1$
 
 	private static final boolean DEFAULT_MIRROR = false;
 
 	/** Default value for {@link #getUploadPack()} if not specified. */
-	public static final String DEFAULT_UPLOAD_PACK = "git-upload-pack";
+	public static final String DEFAULT_UPLOAD_PACK = "git-upload-pack"; //$NON-NLS-1$
 
 	/** Default value for {@link #getReceivePack()} if not specified. */
-	public static final String DEFAULT_RECEIVE_PACK = "git-receive-pack";
+	public static final String DEFAULT_RECEIVE_PACK = "git-receive-pack"; //$NON-NLS-1$
 
 	/**
 	 * Parse all remote blocks in an existing configuration file, looking for
@@ -114,11 +114,11 @@ public class RemoteConfig implements Serializable {
 	 */
 	public static List<RemoteConfig> getAllRemoteConfigs(final Config rc)
 			throws URISyntaxException {
-		final List<String> names = new ArrayList<String>(rc
+		final List<String> names = new ArrayList<>(rc
 				.getSubsections(SECTION));
 		Collections.sort(names);
 
-		final List<RemoteConfig> result = new ArrayList<RemoteConfig>(names
+		final List<RemoteConfig> result = new ArrayList<>(names
 				.size());
 		for (final String name : names)
 			result.add(new RemoteConfig(rc, name));
@@ -169,24 +169,24 @@ public class RemoteConfig implements Serializable {
 
 		vlst = rc.getStringList(SECTION, name, KEY_URL);
 		Map<String, String> insteadOf = getReplacements(rc, KEY_INSTEADOF);
-		uris = new ArrayList<URIish>(vlst.length);
+		uris = new ArrayList<>(vlst.length);
 		for (final String s : vlst)
 			uris.add(new URIish(replaceUri(s, insteadOf)));
 
 		Map<String, String> pushInsteadOf = getReplacements(rc,
 				KEY_PUSHINSTEADOF);
 		vlst = rc.getStringList(SECTION, name, KEY_PUSHURL);
-		pushURIs = new ArrayList<URIish>(vlst.length);
+		pushURIs = new ArrayList<>(vlst.length);
 		for (final String s : vlst)
 			pushURIs.add(new URIish(replaceUri(s, pushInsteadOf)));
 
 		vlst = rc.getStringList(SECTION, name, KEY_FETCH);
-		fetch = new ArrayList<RefSpec>(vlst.length);
+		fetch = new ArrayList<>(vlst.length);
 		for (final String s : vlst)
 			fetch.add(new RefSpec(s));
 
 		vlst = rc.getStringList(SECTION, name, KEY_PUSH);
-		push = new ArrayList<RefSpec>(vlst.length);
+		push = new ArrayList<>(vlst.length);
 		for (final String s : vlst)
 			push.add(new RefSpec(s));
 
@@ -213,7 +213,7 @@ public class RemoteConfig implements Serializable {
 	 *            the configuration file to store ourselves into.
 	 */
 	public void update(final Config rc) {
-		final List<String> vlst = new ArrayList<String>();
+		final List<String> vlst = new ArrayList<>();
 
 		vlst.clear();
 		for (final URIish u : getURIs())
@@ -272,7 +272,7 @@ public class RemoteConfig implements Serializable {
 
 	private Map<String, String> getReplacements(final Config config,
 			final String keyName) {
-		final Map<String, String> replacements = new HashMap<String, String>();
+		final Map<String, String> replacements = new HashMap<>();
 		for (String url : config.getSubsections(KEY_URL))
 			for (String insteadOf : config.getStringList(KEY_URL, url, keyName))
 				replacements.put(insteadOf, url);

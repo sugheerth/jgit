@@ -47,14 +47,14 @@ package org.eclipse.jgit.pgm.opt;
 import java.io.IOException;
 import java.text.MessageFormat;
 
+import org.eclipse.jgit.lib.ObjectId;
+import org.eclipse.jgit.pgm.internal.CLIText;
 import org.kohsuke.args4j.CmdLineException;
 import org.kohsuke.args4j.CmdLineParser;
 import org.kohsuke.args4j.OptionDef;
 import org.kohsuke.args4j.spi.OptionHandler;
 import org.kohsuke.args4j.spi.Parameters;
 import org.kohsuke.args4j.spi.Setter;
-import org.eclipse.jgit.lib.ObjectId;
-import org.eclipse.jgit.pgm.CLIText;
 
 /**
  * Custom argument handler {@link ObjectId} from string values.
@@ -86,14 +86,14 @@ public class ObjectIdHandler extends OptionHandler<ObjectId> {
 		try {
 			id = clp.getRepository().resolve(name);
 		} catch (IOException e) {
-			throw new CmdLineException(e.getMessage());
+			throw new CmdLineException(clp, e.getMessage());
 		}
 		if (id != null) {
 			setter.addValue(id);
 			return 1;
 		}
 
-		throw new CmdLineException(MessageFormat.format(CLIText.get().notAnObject, name));
+		throw new CmdLineException(clp, MessageFormat.format(CLIText.get().notAnObject, name));
 	}
 
 	@Override

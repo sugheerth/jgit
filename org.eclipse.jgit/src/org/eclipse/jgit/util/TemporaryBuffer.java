@@ -44,6 +44,7 @@
 
 package org.eclipse.jgit.util;
 
+import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -55,7 +56,6 @@ import java.util.ArrayList;
 import org.eclipse.jgit.internal.JGitText;
 import org.eclipse.jgit.lib.NullProgressMonitor;
 import org.eclipse.jgit.lib.ProgressMonitor;
-import org.eclipse.jgit.util.io.SafeBufferedOutputStream;
 
 /**
  * A fully buffered output stream.
@@ -68,7 +68,7 @@ public abstract class TemporaryBuffer extends OutputStream {
 	protected static final int DEFAULT_IN_CORE_LIMIT = 1024 * 1024;
 
 	/** Chain of data, if we are still completely in-core; otherwise null. */
-	private ArrayList<Block> blocks;
+	ArrayList<Block> blocks;
 
 	/**
 	 * Maximum number of bytes we will permit storing in memory.
@@ -78,6 +78,9 @@ public abstract class TemporaryBuffer extends OutputStream {
 	 */
 	private int inCoreLimit;
 
+	/** Initial size of block list. */
+	private int initialBlocks;
+
 	/** If {@link #inCoreLimit} has been reached, remainder goes here. */
 	private OutputStream overflow;
 
@@ -86,10 +89,28 @@ public abstract class TemporaryBuffer extends OutputStream {
 	 *
 	 * @param limit
 	 *            maximum number of bytes to store in memory before entering the
-	 *            overflow output path.
+	 *            overflow output path; also used as the estimated size.
 	 */
 	protected TemporaryBuffer(final int limit) {
-		inCoreLimit = limit;
+		this(limit, limit);
+	}
+
+	/**
+	 * Create a new empty temporary buffer.
+	 *
+	 * @param estimatedSize
+	 *            estimated size of storage used, to size the initial list of
+	 *            block pointers.
+	 * @param limit
+	 *            maximum number of bytes to store in memory before entering the
+	 *            overflow output path.
+	 * @since 4.0
+	 */
+	protected TemporaryBuffer(final int estimatedSize, final int limit) {
+		if (estimatedSize > limit)
+			throw new IllegalArgumentException();
+		this.inCoreLimit = limit;
+		this.initialBlocks = (estimatedSize - 1) / Block.SZ + 1;
 		reset();
 	}
 
@@ -225,6 +246,37 @@ public abstract class TemporaryBuffer extends OutputStream {
 	}
 
 	/**
+	 * Convert this buffer's contents into a contiguous byte array. If this size
+	 * of the buffer exceeds the limit only return the first {@code limit} bytes
+	 * <p>
+	 * The buffer is only complete after {@link #close()} has been invoked.
+	 *
+	 * @param limit
+	 *            the maximum number of bytes to be returned
+	 *
+	 * @return the byte array limited to {@code limit} bytes.
+	 * @throws IOException
+	 *             an error occurred reading from a local temporary file
+	 * @throws OutOfMemoryError
+	 *             the buffer cannot fit in memory
+	 *
+	 * @since 4.2
+	 */
+	public byte[] toByteArray(int limit) throws IOException {
+		final long len = Math.min(length(), limit);
+		if (Integer.MAX_VALUE < len)
+			throw new OutOfMemoryError(
+					JGitText.get().lengthExceedsMaximumArraySize);
+		final byte[] out = new byte[(int) len];
+		int outPtr = 0;
+		for (final Block b : blocks) {
+			System.arraycopy(b.buffer, 0, out, outPtr, b.count);
+			outPtr += b.count;
+		}
+		return out;
+	}
+
+	/**
 	 * Send this buffer to an output stream.
 	 * <p>
 	 * This method may only be invoked after {@link #close()} has completed
@@ -270,13 +322,11 @@ public abstract class TemporaryBuffer extends OutputStream {
 		if (overflow != null) {
 			destroy();
 		}
-		if (inCoreLimit < Block.SZ) {
-			blocks = new ArrayList<Block>(1);
-			blocks.add(new Block(inCoreLimit));
-		} else {
-			blocks = new ArrayList<Block>(inCoreLimit / Block.SZ);
-			blocks.add(new Block());
-		}
+		if (blocks != null)
+			blocks.clear();
+		else
+			blocks = new ArrayList<>(initialBlocks);
+		blocks.add(new Block(Math.min(inCoreLimit, Block.SZ)));
 	}
 
 	/**
@@ -309,10 +359,11 @@ public abstract class TemporaryBuffer extends OutputStream {
 			overflow.write(b.buffer, 0, b.count);
 		blocks = null;
 
-		overflow = new SafeBufferedOutputStream(overflow, Block.SZ);
+		overflow = new BufferedOutputStream(overflow, Block.SZ);
 		overflow.write(last.buffer, 0, last.count);
 	}
 
+	@Override
 	public void close() throws IOException {
 		if (overflow != null) {
 			try {
@@ -361,22 +412,6 @@ public abstract class TemporaryBuffer extends OutputStream {
 		 */
 		private File onDiskFile;
 
-		/** Create a new temporary buffer. */
-		public LocalFile() {
-			this(null, DEFAULT_IN_CORE_LIMIT);
-		}
-
-		/**
-		 * Create a new temporary buffer, limiting memory usage.
-		 *
-		 * @param inCoreLimit
-		 *            maximum number of bytes to store in memory. Storage beyond
-		 *            this limit will use the local file.
-		 */
-		public LocalFile(final int inCoreLimit) {
-			this(null, inCoreLimit);
-		}
-
 		/**
 		 * Create a new temporary buffer, limiting memory usage.
 		 *
@@ -407,11 +442,13 @@ public abstract class TemporaryBuffer extends OutputStream {
 			this.directory = directory;
 		}
 
+		@Override
 		protected OutputStream overflow() throws IOException {
-			onDiskFile = File.createTempFile("jgit_", ".buf", directory);
-			return new FileOutputStream(onDiskFile);
+			onDiskFile = File.createTempFile("jgit_", ".buf", directory); //$NON-NLS-1$ //$NON-NLS-2$
+			return new BufferedOutputStream(new FileOutputStream(onDiskFile));
 		}
 
+		@Override
 		public long length() {
 			if (onDiskFile == null) {
 				return super.length();
@@ -419,6 +456,7 @@ public abstract class TemporaryBuffer extends OutputStream {
 			return onDiskFile.length();
 		}
 
+		@Override
 		public byte[] toByteArray() throws IOException {
 			if (onDiskFile == null) {
 				return super.toByteArray();
@@ -437,6 +475,7 @@ public abstract class TemporaryBuffer extends OutputStream {
 			return out;
 		}
 
+		@Override
 		public void writeTo(final OutputStream os, ProgressMonitor pm)
 				throws IOException {
 			if (onDiskFile == null) {
@@ -491,12 +530,28 @@ public abstract class TemporaryBuffer extends OutputStream {
 		 * Create a new heap buffer with a maximum storage limit.
 		 *
 		 * @param limit
-		 *            maximum number of bytes that can be stored in this buffer.
-		 *            Storing beyond this many will cause an IOException to be
-		 *            thrown during write.
+		 *            maximum number of bytes that can be stored in this buffer;
+		 *            also used as the estimated size. Storing beyond this many
+		 *            will cause an IOException to be thrown during write.
 		 */
 		public Heap(final int limit) {
 			super(limit);
+		}
+
+		/**
+		 * Create a new heap buffer with a maximum storage limit.
+		 *
+		 * @param estimatedSize
+		 *            estimated size of storage used, to size the initial list of
+		 *            block pointers.
+		 * @param limit
+		 *            maximum number of bytes that can be stored in this buffer.
+		 *            Storing beyond this many will cause an IOException to be
+		 *            thrown during write.
+		 * @since 4.0
+		 */
+		public Heap(final int estimatedSize, final int limit) {
+			super(estimatedSize, limit);
 		}
 
 		@Override

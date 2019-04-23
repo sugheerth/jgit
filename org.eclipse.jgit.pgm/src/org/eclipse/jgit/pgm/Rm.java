@@ -58,15 +58,16 @@ class Rm extends TextBuiltin {
 	@Argument(metaVar = "metaVar_path", usage = "usage_path", multiValued = true, required = true)
 
 	@Option(name = "--", handler = StopOptionHandler.class)
-	private List<String> paths = new ArrayList<String>();
+	private List<String> paths = new ArrayList<>();
 
 
 	@Override
 	protected void run() throws Exception {
-		RmCommand command = new Git(db).rm();
-		for (String p : paths)
-			command.addFilepattern(p);
-		command.call();
+		try (Git git = new Git(db)) {
+			RmCommand command = git.rm();
+			for (String p : paths)
+				command.addFilepattern(p);
+			command.call();
+		}
 	}
-
 }

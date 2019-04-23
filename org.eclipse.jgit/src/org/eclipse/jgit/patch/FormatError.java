@@ -43,6 +43,8 @@
 
 package org.eclipse.jgit.patch;
 
+import java.util.Locale;
+
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.util.RawParseUtils;
 
@@ -102,13 +104,13 @@ public class FormatError {
 	@Override
 	public String toString() {
 		final StringBuilder r = new StringBuilder();
-		r.append(getSeverity().name().toLowerCase());
-		r.append(": at offset ");
+		r.append(getSeverity().name().toLowerCase(Locale.ROOT));
+		r.append(": at offset "); //$NON-NLS-1$
 		r.append(getOffset());
-		r.append(": ");
+		r.append(": "); //$NON-NLS-1$
 		r.append(getMessage());
-		r.append("\n");
-		r.append("  in ");
+		r.append("\n"); //$NON-NLS-1$
+		r.append("  in "); //$NON-NLS-1$
 		r.append(getLineText());
 		return r.toString();
 	}

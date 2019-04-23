@@ -47,7 +47,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
-import org.eclipse.jgit.lib.RepositoryTestCase;
+import org.eclipse.jgit.junit.RepositoryTestCase;
 import org.eclipse.jgit.treewalk.EmptyTreeIterator;
 import org.eclipse.jgit.treewalk.TreeWalk;
 import org.junit.Test;
@@ -55,9 +55,10 @@ import org.junit.Test;
 public class TreeFilterTest extends RepositoryTestCase {
 	@Test
 	public void testALL_IncludesAnything() throws Exception {
-		final TreeWalk tw = new TreeWalk(db);
-		tw.addTree(new EmptyTreeIterator());
-		assertTrue(TreeFilter.ALL.include(tw));
+		try (final TreeWalk tw = new TreeWalk(db)) {
+			tw.addTree(new EmptyTreeIterator());
+			assertTrue(TreeFilter.ALL.include(tw));
+		}
 	}
 
 	@Test
@@ -72,16 +73,18 @@ public class TreeFilterTest extends RepositoryTestCase {
 
 	@Test
 	public void testNotALL_IncludesNothing() throws Exception {
-		final TreeWalk tw = new TreeWalk(db);
-		tw.addTree(new EmptyTreeIterator());
-		assertFalse(TreeFilter.ALL.negate().include(tw));
+		try (final TreeWalk tw = new TreeWalk(db)) {
+			tw.addTree(new EmptyTreeIterator());
+			assertFalse(TreeFilter.ALL.negate().include(tw));
+		}
 	}
 
 	@Test
 	public void testANY_DIFF_IncludesSingleTreeCase() throws Exception {
-		final TreeWalk tw = new TreeWalk(db);
-		tw.addTree(new EmptyTreeIterator());
-		assertTrue(TreeFilter.ANY_DIFF.include(tw));
+		try (final TreeWalk tw = new TreeWalk(db)) {
+			tw.addTree(new EmptyTreeIterator());
+			assertTrue(TreeFilter.ANY_DIFF.include(tw));
+		}
 	}
 
 	@Test

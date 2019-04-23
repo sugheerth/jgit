@@ -65,28 +65,27 @@ import org.eclipse.jgit.lib.NullProgressMonitor;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.Repository;
-import org.eclipse.jgit.lib.SampleDataRepositoryTestCase;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevWalk;
+import org.eclipse.jgit.test.resources.SampleDataRepositoryTestCase;
 import org.junit.Test;
 
 public class BundleWriterTest extends SampleDataRepositoryTestCase {
 
 	@Test
-	public void testWrite0() throws Exception {
+	public void testWriteSingleRef() throws Exception {
 		// Create a tiny bundle, (well one of) the first commits only
 		final byte[] bundle = makeBundle("refs/heads/firstcommit",
 				"42e4e7c5e507e113ebbb7801b16b52cf867b7ce1", null);
 
 		// Then we clone a new repo from that bundle and do a simple test. This
-		// makes sure
-		// we could read the bundle we created.
+		// makes sure we could read the bundle we created.
 		Repository newRepo = createBareRepository();
 		FetchResult fetchResult = fetchFromBundle(newRepo, bundle);
 		Ref advertisedRef = fetchResult
 				.getAdvertisedRef("refs/heads/firstcommit");
 
-		// We expect firstcommit to appear by id
+		// We expect first commit to appear by id
 		assertEquals("42e4e7c5e507e113ebbb7801b16b52cf867b7ce1", advertisedRef
 				.getObjectId().name());
 		// ..and by name as the bundle created a new ref
@@ -94,13 +93,21 @@ public class BundleWriterTest extends SampleDataRepositoryTestCase {
 				.resolve("refs/heads/firstcommit").name());
 	}
 
-	/**
-	 * Incremental bundle test
-	 *
-	 * @throws Exception
-	 */
 	@Test
-	public void testWrite1() throws Exception {
+	public void testWriteHEAD() throws Exception {
+		byte[] bundle = makeBundle("HEAD",
+				"42e4e7c5e507e113ebbb7801b16b52cf867b7ce1", null);
+
+		Repository newRepo = createBareRepository();
+		FetchResult fetchResult = fetchFromBundle(newRepo, bundle);
+		Ref advertisedRef = fetchResult.getAdvertisedRef("HEAD");
+
+		assertEquals("42e4e7c5e507e113ebbb7801b16b52cf867b7ce1", advertisedRef
+				.getObjectId().name());
+	}
+
+	@Test
+	public void testIncrementalBundle() throws Exception {
 		byte[] bundle;
 
 		// Create a small bundle, an early commit
@@ -119,50 +126,89 @@ public class BundleWriterTest extends SampleDataRepositoryTestCase {
 		assertNull(newRepo.resolve("refs/heads/a"));
 
 		// Next an incremental bundle
-		bundle = makeBundle("refs/heads/cc", db.resolve("c").name(),
-				new RevWalk(db).parseCommit(db.resolve("a").toObjectId()));
-		fetchResult = fetchFromBundle(newRepo, bundle);
-		advertisedRef = fetchResult.getAdvertisedRef("refs/heads/cc");
-		assertEquals(db.resolve("c").name(), advertisedRef.getObjectId().name());
-		assertEquals(db.resolve("c").name(), newRepo.resolve("refs/heads/cc")
-				.name());
-		assertNull(newRepo.resolve("refs/heads/c"));
-		assertNull(newRepo.resolve("refs/heads/a")); // still unknown
+		try (RevWalk rw = new RevWalk(db)) {
+			bundle = makeBundle("refs/heads/cc", db.resolve("c").name(),
+					rw.parseCommit(db.resolve("a").toObjectId()));
+			fetchResult = fetchFromBundle(newRepo, bundle);
+			advertisedRef = fetchResult.getAdvertisedRef("refs/heads/cc");
+			assertEquals(db.resolve("c").name(), advertisedRef.getObjectId().name());
+			assertEquals(db.resolve("c").name(), newRepo.resolve("refs/heads/cc")
+					.name());
+			assertNull(newRepo.resolve("refs/heads/c"));
+			assertNull(newRepo.resolve("refs/heads/a")); // still unknown
 
-		try {
-			// Check that we actually needed the first bundle
-			Repository newRepo2 = createBareRepository();
-			fetchResult = fetchFromBundle(newRepo2, bundle);
-			fail("We should not be able to fetch from bundle with prerequisites that are not fulfilled");
-		} catch (MissingBundlePrerequisiteException e) {
-			assertTrue(e.getMessage()
-					.indexOf(db.resolve("refs/heads/a").name()) >= 0);
+			try {
+				// Check that we actually needed the first bundle
+				Repository newRepo2 = createBareRepository();
+				fetchResult = fetchFromBundle(newRepo2, bundle);
+				fail("We should not be able to fetch from bundle with prerequisites that are not fulfilled");
+			} catch (MissingBundlePrerequisiteException e) {
+				assertTrue(e.getMessage()
+						.indexOf(db.resolve("refs/heads/a").name()) >= 0);
+			}
 		}
 	}
 
-	private FetchResult fetchFromBundle(final Repository newRepo,
+	@Test
+	public void testAbortWrite() throws Exception {
+		boolean caught = false;
+		try {
+			makeBundleWithCallback(
+					"refs/heads/aa", db.resolve("a").name(), null, false);
+		} catch (WriteAbortedException e) {
+			caught = true;
+		}
+		assertTrue(caught);
+	}
+
+	private static FetchResult fetchFromBundle(final Repository newRepo,
 			final byte[] bundle) throws URISyntaxException,
 			NotSupportedException, TransportException {
 		final URIish uri = new URIish("in-memory://");
 		final ByteArrayInputStream in = new ByteArrayInputStream(bundle);
 		final RefSpec rs = new RefSpec("refs/heads/*:refs/heads/*");
 		final Set<RefSpec> refs = Collections.singleton(rs);
-		return new TransportBundleStream(newRepo, uri, in).fetch(
-				NullProgressMonitor.INSTANCE, refs);
+		try (TransportBundleStream transport = new TransportBundleStream(
+				newRepo, uri, in)) {
+			return transport.fetch(NullProgressMonitor.INSTANCE, refs);
+		}
 	}
 
 	private byte[] makeBundle(final String name,
 			final String anObjectToInclude, final RevCommit assume)
 			throws FileNotFoundException, IOException {
+		return makeBundleWithCallback(name, anObjectToInclude, assume, true);
+	}
+
+	private byte[] makeBundleWithCallback(final String name,
+			final String anObjectToInclude, final RevCommit assume,
+			boolean value)
+			throws FileNotFoundException, IOException {
 		final BundleWriter bw;
 
 		bw = new BundleWriter(db);
+		bw.setObjectCountCallback(new NaiveObjectCountCallback(value));
 		bw.include(name, ObjectId.fromString(anObjectToInclude));
 		if (assume != null)
 			bw.assume(assume);
 		final ByteArrayOutputStream out = new ByteArrayOutputStream();
 		bw.writeBundle(NullProgressMonitor.INSTANCE, out);
 		return out.toByteArray();
+	}
+
+	private static class NaiveObjectCountCallback
+			implements ObjectCountCallback {
+		private final boolean value;
+
+		NaiveObjectCountCallback(boolean value) {
+			this.value = value;
+		}
+
+		@Override
+		public void setObjectCount(long unused) throws WriteAbortedException {
+			if (!value)
+				throw new WriteAbortedException();
+		}
 	}
 
 }

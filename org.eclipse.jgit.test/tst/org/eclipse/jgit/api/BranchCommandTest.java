@@ -59,12 +59,12 @@ import org.eclipse.jgit.api.errors.JGitInternalException;
 import org.eclipse.jgit.api.errors.NotMergedException;
 import org.eclipse.jgit.api.errors.RefAlreadyExistsException;
 import org.eclipse.jgit.api.errors.RefNotFoundException;
+import org.eclipse.jgit.junit.RepositoryTestCase;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.RefUpdate;
 import org.eclipse.jgit.lib.Repository;
-import org.eclipse.jgit.lib.RepositoryTestCase;
 import org.eclipse.jgit.lib.StoredConfig;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.transport.FetchResult;
@@ -104,37 +104,38 @@ public class BranchCommandTest extends RepositoryTestCase {
 
 	private Git setUpRepoWithRemote() throws Exception {
 		Repository remoteRepository = createWorkRepository();
-		Git remoteGit = new Git(remoteRepository);
-		// commit something
-		writeTrashFile("Test.txt", "Hello world");
-		remoteGit.add().addFilepattern("Test.txt").call();
-		initialCommit = remoteGit.commit().setMessage("Initial commit").call();
-		writeTrashFile("Test.txt", "Some change");
-		remoteGit.add().addFilepattern("Test.txt").call();
-		secondCommit = remoteGit.commit().setMessage("Second commit").call();
-		// create a master branch
-		RefUpdate rup = remoteRepository.updateRef("refs/heads/master");
-		rup.setNewObjectId(initialCommit.getId());
-		rup.forceUpdate();
+		try (Git remoteGit = new Git(remoteRepository)) {
+			// commit something
+			writeTrashFile("Test.txt", "Hello world");
+			remoteGit.add().addFilepattern("Test.txt").call();
+			initialCommit = remoteGit.commit().setMessage("Initial commit").call();
+			writeTrashFile("Test.txt", "Some change");
+			remoteGit.add().addFilepattern("Test.txt").call();
+			secondCommit = remoteGit.commit().setMessage("Second commit").call();
+			// create a master branch
+			RefUpdate rup = remoteRepository.updateRef("refs/heads/master");
+			rup.setNewObjectId(initialCommit.getId());
+			rup.forceUpdate();
 
-		Repository localRepository = createWorkRepository();
-		Git localGit = new Git(localRepository);
-		StoredConfig config = localRepository.getConfig();
-		RemoteConfig rc = new RemoteConfig(config, "origin");
-		rc.addURI(new URIish(remoteRepository.getDirectory().getPath()));
-		rc.addFetchRefSpec(new RefSpec("+refs/heads/*:refs/remotes/origin/*"));
-		rc.update(config);
-		config.save();
-		FetchResult res = localGit.fetch().setRemote("origin").call();
-		assertFalse(res.getTrackingRefUpdates().isEmpty());
-		rup = localRepository.updateRef("refs/heads/master");
-		rup.setNewObjectId(initialCommit.getId());
-		rup.forceUpdate();
-		rup = localRepository.updateRef(Constants.HEAD);
-		rup.link("refs/heads/master");
-		rup.setNewObjectId(initialCommit.getId());
-		rup.update();
-		return localGit;
+			Repository localRepository = createWorkRepository();
+			Git localGit = new Git(localRepository);
+			StoredConfig config = localRepository.getConfig();
+			RemoteConfig rc = new RemoteConfig(config, "origin");
+			rc.addURI(new URIish(remoteRepository.getDirectory().getAbsolutePath()));
+			rc.addFetchRefSpec(new RefSpec("+refs/heads/*:refs/remotes/origin/*"));
+			rc.update(config);
+			config.save();
+			FetchResult res = localGit.fetch().setRemote("origin").call();
+			assertFalse(res.getTrackingRefUpdates().isEmpty());
+			rup = localRepository.updateRef("refs/heads/master");
+			rup.setNewObjectId(initialCommit.getId());
+			rup.forceUpdate();
+			rup = localRepository.updateRef(Constants.HEAD);
+			rup.link("refs/heads/master");
+			rup.setNewObjectId(initialCommit.getId());
+			rup.update();
+			return localGit;
+		}
 	}
 
 	@Test
@@ -192,8 +193,21 @@ public class BranchCommandTest extends RepositoryTestCase {
 
 	@Test
 	public void testListAllBranchesShouldNotDie() throws Exception {
-		Git git = setUpRepoWithRemote();
-		git.branchList().setListMode(ListMode.ALL).call();
+		setUpRepoWithRemote().branchList().setListMode(ListMode.ALL).call();
+	}
+
+	@Test
+	public void testListBranchesWithContains() throws Exception {
+		git.branchCreate().setName("foo").setStartPoint(secondCommit).call();
+
+		List<Ref> refs = git.branchList().call();
+		assertEquals(2, refs.size());
+
+		List<Ref> refsContainingSecond = git.branchList()
+				.setContains(secondCommit.name()).call();
+		assertEquals(1, refsContainingSecond.size());
+		// master is on initial commit, so it should not be returned
+		assertEquals("refs/heads/foo", refsContainingSecond.get(0).getName());
 	}
 
 	@Test
@@ -459,9 +473,16 @@ public class BranchCommandTest extends RepositoryTestCase {
 	}
 
 	@Test
-	public void testCreationImplicitStart() throws JGitInternalException,
-			GitAPIException {
+	public void testCreationImplicitStart() throws Exception {
 		git.branchCreate().setName("topic").call();
+		assertEquals(db.resolve("HEAD"), db.resolve("topic"));
+	}
+
+	@Test
+	public void testCreationNullStartPoint() throws Exception {
+		String startPoint = null;
+		git.branchCreate().setName("topic").setStartPoint(startPoint).call();
+		assertEquals(db.resolve("HEAD"), db.resolve("topic"));
 	}
 
 	public Ref createBranch(Git actGit, String name, boolean force,

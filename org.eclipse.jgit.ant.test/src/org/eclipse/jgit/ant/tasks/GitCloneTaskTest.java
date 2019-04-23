@@ -51,8 +51,8 @@ import org.apache.tools.ant.BuildException;
 import org.apache.tools.ant.DefaultLogger;
 import org.apache.tools.ant.Project;
 import org.eclipse.jgit.junit.LocalDiskRepositoryTestCase;
+import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.lib.RepositoryCache;
-import org.eclipse.jgit.storage.file.FileRepository;
 import org.eclipse.jgit.util.FS;
 import org.junit.Before;
 import org.junit.Test;
@@ -99,9 +99,9 @@ public class GitCloneTaskTest extends LocalDiskRepositoryTestCase {
 
 	@Test
 	public void shouldCloneAValidGitRepository() throws Exception {
-		FileRepository repo = createBareRepository();
+		Repository repo = createBareRepository();
 		File directory = repo.getDirectory();
-		task.setUri("file://" + directory);
+		task.setUri("file://" + directory.getAbsolutePath());
 		task.execute();
 
 		assertTrue(RepositoryCache.FileKey.isGitRepository(new File(dest, ".git"), FS.DETECTED));
@@ -109,9 +109,9 @@ public class GitCloneTaskTest extends LocalDiskRepositoryTestCase {
 
 	@Test
 	public void shouldCreateABareCloneOfAValidGitRepository() throws Exception {
-		FileRepository repo = createBareRepository();
+		Repository repo = createBareRepository();
 		File directory = repo.getDirectory();
-		task.setUri("file://" + directory);
+		task.setUri("file://" + directory.getAbsolutePath());
 		task.setBare(true);
 		task.execute();
 

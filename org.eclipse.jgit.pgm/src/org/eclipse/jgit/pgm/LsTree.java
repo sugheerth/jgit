@@ -45,13 +45,20 @@
 
 package org.eclipse.jgit.pgm;
 
-import org.kohsuke.args4j.Argument;
-import org.kohsuke.args4j.Option;
+import java.util.ArrayList;
+import java.util.List;
+
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.FileMode;
 import org.eclipse.jgit.treewalk.AbstractTreeIterator;
 import org.eclipse.jgit.treewalk.TreeWalk;
+import org.eclipse.jgit.treewalk.filter.PathFilterGroup;
+import org.eclipse.jgit.util.QuotedString;
+import org.kohsuke.args4j.Argument;
+import org.kohsuke.args4j.Option;
+import org.kohsuke.args4j.spi.StopOptionHandler;
 
+@Command(common = true, usage = "usage_LsTree")
 class LsTree extends TextBuiltin {
 	@Option(name = "--recursive", usage = "usage_recurseIntoSubtrees", aliases = { "-r" })
 	private boolean recursive;
@@ -59,26 +66,34 @@ class LsTree extends TextBuiltin {
 	@Argument(index = 0, required = true, metaVar = "metaVar_treeish")
 	private AbstractTreeIterator tree;
 
+	@Argument(index = 1)
+	@Option(name = "--", metaVar = "metaVar_paths", multiValued = true, handler = StopOptionHandler.class)
+	private List<String> paths = new ArrayList<>();
+
 	@Override
 	protected void run() throws Exception {
-		final TreeWalk walk = new TreeWalk(db);
-		walk.setRecursive(recursive);
-		walk.addTree(tree);
+		try (final TreeWalk walk = new TreeWalk(db)) {
+			walk.reset(); // drop the first empty tree, which we do not need here
+			if (paths.size() > 0)
+				walk.setFilter(PathFilterGroup.createFromStrings(paths));
+			walk.setRecursive(recursive);
+			walk.addTree(tree);
 
-		while (walk.next()) {
-			final FileMode mode = walk.getFileMode(0);
-			if (mode == FileMode.TREE)
-				out.print('0');
-			out.print(mode);
-			out.print(' ');
-			out.print(Constants.typeString(mode.getObjectType()));
+			while (walk.next()) {
+				final FileMode mode = walk.getFileMode(0);
+				if (mode == FileMode.TREE)
+					outw.print('0');
+				outw.print(mode);
+				outw.print(' ');
+				outw.print(Constants.typeString(mode.getObjectType()));
 
-			out.print(' ');
-			out.print(walk.getObjectId(0).name());
+				outw.print(' ');
+				outw.print(walk.getObjectId(0).name());
 
-			out.print('\t');
-			out.print(walk.getPathString());
-			out.println();
+				outw.print('\t');
+				outw.print(QuotedString.GIT_PATH.quote(walk.getPathString()));
+				outw.println();
+			}
 		}
 	}
 }

@@ -51,6 +51,7 @@ import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.Reader;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
 import java.text.MessageFormat;
@@ -216,6 +217,7 @@ public class IO {
 		if (last < 0)
 			return ByteBuffer.wrap(out, 0, pos);
 
+		@SuppressWarnings("resource" /* java 7 */)
 		TemporaryBuffer.Heap tmp = new TemporaryBuffer.Heap(Integer.MAX_VALUE);
 		tmp.write(out);
 		tmp.write(last);
@@ -316,7 +318,7 @@ public class IO {
 	 * @param fd
 	 *            the stream to skip bytes from.
 	 * @param toSkip
-	 *            total number of bytes to be discarded. Must be >= 0.
+	 *            total number of bytes to be discarded. Must be &gt;= 0.
 	 * @throws EOFException
 	 *             the stream ended before the requested number of bytes were
 	 *             skipped.
@@ -342,7 +344,7 @@ public class IO {
 	 * @since 2.0
 	 */
 	public static List<String> readLines(final String s) {
-		List<String> l = new ArrayList<String>();
+		List<String> l = new ArrayList<>();
 		StringBuilder sb = new StringBuilder();
 		for (int i = 0; i < s.length(); i++) {
 			char c = s.charAt(i);
@@ -368,6 +370,75 @@ public class IO {
 		}
 		l.add(sb.toString());
 		return l;
+	}
+
+	/**
+	 * Read the next line from a reader.
+	 * <p>
+	 * Like {@link java.io.BufferedReader#readLine()}, but only treats
+	 * {@code \n} as end-of-line, and includes the trailing newline.
+	 *
+	 * @param in
+	 *            the reader to read from.
+	 * @param sizeHint
+	 *            hint for buffer sizing; 0 or negative for default.
+	 * @return the next line from the input, always ending in {@code \n} unless
+	 *         EOF was reached.
+	 * @throws IOException
+	 *             there was an error reading from the stream.
+	 * @since 4.1
+	 */
+	public static String readLine(Reader in, int sizeHint) throws IOException {
+		if (in.markSupported()) {
+			if (sizeHint <= 0) {
+				sizeHint = 1024;
+			}
+			StringBuilder sb = new StringBuilder(sizeHint);
+			char[] buf = new char[sizeHint];
+			while (true) {
+				in.mark(sizeHint);
+				int n = in.read(buf);
+				if (n < 0) {
+					in.reset();
+					return sb.toString();
+				}
+				for (int i = 0; i < n; i++) {
+					if (buf[i] == '\n') {
+						resetAndSkipFully(in, ++i);
+						sb.append(buf, 0, i);
+						return sb.toString();
+					}
+				}
+				if (n > 0) {
+					sb.append(buf, 0, n);
+				}
+				resetAndSkipFully(in, n);
+			}
+		} else {
+			StringBuilder buf = sizeHint > 0
+					? new StringBuilder(sizeHint)
+					: new StringBuilder();
+			int i;
+			while ((i = in.read()) != -1) {
+				char c = (char) i;
+				buf.append(c);
+				if (c == '\n') {
+					break;
+				}
+			}
+			return buf.toString();
+		}
+	}
+
+	private static void resetAndSkipFully(Reader fd, long toSkip) throws IOException {
+		fd.reset();
+		while (toSkip > 0) {
+			long r = fd.skip(toSkip);
+			if (r <= 0) {
+				throw new EOFException(JGitText.get().shortSkipOfBlock);
+			}
+			toSkip -= r;
+		}
 	}
 
 	private IO() {

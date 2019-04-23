@@ -54,6 +54,7 @@ import java.util.Set;
 import java.util.TreeMap;
 
 import org.eclipse.jgit.internal.JGitText;
+import org.eclipse.jgit.internal.storage.pack.PackWriter;
 import org.eclipse.jgit.lib.AnyObjectId;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
@@ -62,7 +63,6 @@ import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.storage.pack.PackConfig;
-import org.eclipse.jgit.storage.pack.PackWriter;
 
 /**
  * Creates a Git bundle file, for sneaker-net transport to another system.
@@ -92,6 +92,8 @@ public class BundleWriter {
 
 	private PackConfig packConfig;
 
+	private ObjectCountCallback callback;
+
 	/**
 	 * Create a writer for a bundle.
 	 *
@@ -100,9 +102,9 @@ public class BundleWriter {
 	 */
 	public BundleWriter(final Repository repo) {
 		db = repo;
-		include = new TreeMap<String, ObjectId>();
-		assume = new HashSet<RevCommit>();
-		tagTargets = new HashSet<ObjectId>();
+		include = new TreeMap<>();
+		assume = new HashSet<>();
+		tagTargets = new HashSet<>();
 	}
 
 	/**
@@ -128,7 +130,8 @@ public class BundleWriter {
 	 *            object to pack. Multiple refs may point to the same object.
 	 */
 	public void include(final String name, final AnyObjectId id) {
-		if (!Repository.isValidRefName(name))
+		boolean validRefName = Repository.isValidRefName(name) || Constants.HEAD.equals(name);
+		if (!validRefName)
 			throw new IllegalArgumentException(MessageFormat.format(JGitText.get().invalidRefName, name));
 		if (include.containsKey(name))
 			throw new IllegalStateException(JGitText.get().duplicateRef + name);
@@ -187,19 +190,24 @@ public class BundleWriter {
 	 *             an error occurred reading a local object's data to include in
 	 *             the bundle, or writing compressed object data to the output
 	 *             stream.
+	 * @throws WriteAbortedException
+	 *             the write operation is aborted by
+	 *             {@link ObjectCountCallback}.
 	 */
 	public void writeBundle(ProgressMonitor monitor, OutputStream os)
 			throws IOException {
 		PackConfig pc = packConfig;
 		if (pc == null)
 			pc = new PackConfig(db);
-		PackWriter packWriter = new PackWriter(pc, db.newObjectReader());
-		try {
-			final HashSet<ObjectId> inc = new HashSet<ObjectId>();
-			final HashSet<ObjectId> exc = new HashSet<ObjectId>();
+		try (PackWriter packWriter = new PackWriter(pc, db.newObjectReader())) {
+			packWriter.setObjectCountCallback(callback);
+
+			final HashSet<ObjectId> inc = new HashSet<>();
+			final HashSet<ObjectId> exc = new HashSet<>();
 			inc.addAll(include.values());
 			for (final RevCommit r : assume)
 				exc.add(r.getId());
+			packWriter.setIndexDisabled(true);
 			packWriter.setDeltaBaseAsOffset(true);
 			packWriter.setThin(exc.size() > 0);
 			packWriter.setReuseValidatingObjects(false);
@@ -231,8 +239,26 @@ public class BundleWriter {
 			w.write('\n');
 			w.flush();
 			packWriter.writePack(monitor, monitor, os);
-		} finally {
-			packWriter.release();
 		}
+	}
+
+	/**
+	 * Set the {@link ObjectCountCallback}.
+	 * <p>
+	 * It should be set before calling
+	 * {@link #writeBundle(ProgressMonitor, OutputStream)}.
+	 * <p>
+	 * This callback will be passed on to
+	 * {@link PackWriter#setObjectCountCallback}.
+	 *
+	 * @param callback
+	 *            the callback to set
+	 *
+	 * @return this object for chaining.
+	 * @since 4.1
+	 */
+	public BundleWriter setObjectCountCallback(ObjectCountCallback callback) {
+		this.callback = callback;
+		return this;
 	}
 }

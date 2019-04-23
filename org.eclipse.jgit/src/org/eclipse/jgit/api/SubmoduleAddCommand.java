@@ -51,6 +51,7 @@ import org.eclipse.jgit.api.errors.JGitInternalException;
 import org.eclipse.jgit.api.errors.NoFilepatternException;
 import org.eclipse.jgit.errors.ConfigInvalidException;
 import org.eclipse.jgit.internal.JGitText;
+import org.eclipse.jgit.internal.submodule.SubmoduleValidator;
 import org.eclipse.jgit.lib.ConfigConstants;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.NullProgressMonitor;
@@ -93,6 +94,7 @@ public class SubmoduleAddCommand extends
 	 * Set repository-relative path of submodule
 	 *
 	 * @param path
+	 *            (with <code>/</code> as separator)
 	 * @return this command
 	 */
 	public SubmoduleAddCommand setPath(final String path) {
@@ -132,15 +134,37 @@ public class SubmoduleAddCommand extends
 	 */
 	protected boolean submoduleExists() throws IOException {
 		TreeFilter filter = PathFilter.create(path);
-		return SubmoduleWalk.forIndex(repo).setFilter(filter).next();
+		try (SubmoduleWalk w = SubmoduleWalk.forIndex(repo)) {
+			return w.setFilter(filter).next();
+		}
 	}
 
+	/**
+	 * Executes the {@code SubmoduleAddCommand}
+	 *
+	 * The {@code Repository} instance returned by this command needs to be
+	 * closed by the caller to free resources held by the {@code Repository}
+	 * instance. It is recommended to call this method as soon as you don't need
+	 * a reference to this {@code Repository} instance anymore.
+	 *
+	 * @return the newly created {@link Repository}
+	 * @throws GitAPIException
+	 */
+	@Override
 	public Repository call() throws GitAPIException {
 		checkCallable();
 		if (path == null || path.length() == 0)
 			throw new IllegalArgumentException(JGitText.get().pathNotConfigured);
 		if (uri == null || uri.length() == 0)
 			throw new IllegalArgumentException(JGitText.get().uriNotConfigured);
+
+		try {
+			SubmoduleValidator.assertValidSubmoduleName(path);
+			SubmoduleValidator.assertValidSubmodulePath(path);
+			SubmoduleValidator.assertValidSubmoduleUri(uri);
+		} catch (SubmoduleValidator.SubmoduleValidationException e) {
+			throw new IllegalArgumentException(e.getMessage());
+		}
 
 		try {
 			if (submoduleExists())
@@ -161,10 +185,16 @@ public class SubmoduleAddCommand extends
 		CloneCommand clone = Git.cloneRepository();
 		configure(clone);
 		clone.setDirectory(moduleDirectory);
+		clone.setGitDir(new File(new File(repo.getDirectory(),
+				Constants.MODULES), path));
 		clone.setURI(resolvedUri);
 		if (monitor != null)
 			clone.setProgressMonitor(monitor);
-		Repository subRepo = clone.call().getRepository();
+		Repository subRepo = null;
+		try (Git git = clone.call()) {
+			subRepo = git.getRepository();
+			subRepo.incrementOpen();
+		}
 
 		// Save submodule URL to parent repository's config
 		StoredConfig config = repo.getConfig();

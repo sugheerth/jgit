@@ -51,10 +51,10 @@ import java.io.File;
 import java.io.IOException;
 
 import org.eclipse.jgit.api.errors.JGitInternalException;
+import org.eclipse.jgit.junit.RepositoryTestCase;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Repository;
-import org.eclipse.jgit.lib.RepositoryTestCase;
 import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.treewalk.TreeWalk;
 import org.junit.Test;
@@ -1043,7 +1043,6 @@ public class CommitOnlyTest extends RepositoryTestCase {
 		return f1;
 	}
 
-	@SuppressWarnings("null")
 	private void executeAndCheck_f1_1(final Git git, final int state)
 			throws Exception {
 		JGitInternalException exception = null;
@@ -1059,7 +1058,6 @@ public class CommitOnlyTest extends RepositoryTestCase {
 		assertEquals(expected_f3_idx(state), indexState(CONTENT));
 	}
 
-	@SuppressWarnings("null")
 	private void executeAndCheck_f1_1_f2_f14(final Git git, final int state)
 			throws Exception {
 		JGitInternalException exception = null;
@@ -1077,7 +1075,6 @@ public class CommitOnlyTest extends RepositoryTestCase {
 				+ expected_f3_idx(state), indexState(CONTENT));
 	}
 
-	@SuppressWarnings("null")
 	private void executeAndCheck_f1_2(final Git git, final int state)
 			throws Exception {
 		JGitInternalException exception = null;
@@ -1129,7 +1126,6 @@ public class CommitOnlyTest extends RepositoryTestCase {
 		executeAndCheck_f1_3(git, state);
 	}
 
-	@SuppressWarnings("null")
 	private void executeAndCheck_f1_6(final Git git, final int state)
 			throws Exception {
 		JGitInternalException exception = null;
@@ -1192,7 +1188,6 @@ public class CommitOnlyTest extends RepositoryTestCase {
 		executeAndCheck_f1_8(git, state);
 	}
 
-	@SuppressWarnings("null")
 	private void executeAndCheck_f1_12(final Git git, final int state)
 			throws Exception {
 		JGitInternalException exception = null;
@@ -1267,7 +1262,7 @@ public class CommitOnlyTest extends RepositoryTestCase {
 		}
 	}
 
-	private String expected_f3_head(final int state) {
+	private static String expected_f3_head(final int state) {
 		switch (state) {
 		case 0:
 		case 1:
@@ -1280,7 +1275,7 @@ public class CommitOnlyTest extends RepositoryTestCase {
 		return null;
 	}
 
-	private String expected_f3_idx(final int state) {
+	private static String expected_f3_idx(final int state) {
 		switch (state) {
 		case 0:
 		case 3:
@@ -1294,14 +1289,17 @@ public class CommitOnlyTest extends RepositoryTestCase {
 		return null;
 	}
 
-	private String getHead(final Git git, final String path) throws Exception {
+	static private String getHead(final Git git, final String path)
+			throws Exception {
 		try {
 			final Repository repo = git.getRepository();
 			final ObjectId headId = repo.resolve(Constants.HEAD + "^{commit}");
-			final TreeWalk tw = TreeWalk.forPath(repo, path,
-					new RevWalk(repo).parseTree(headId));
-			return new String(tw.getObjectReader().open(tw.getObjectId(0))
-					.getBytes());
+			try (RevWalk rw = new RevWalk(repo)) {
+				final TreeWalk tw = TreeWalk.forPath(repo, path,
+						rw.parseTree(headId));
+				return new String(tw.getObjectReader().open(tw.getObjectId(0))
+						.getBytes());
+			}
 		} catch (Exception e) {
 			return "";
 		}

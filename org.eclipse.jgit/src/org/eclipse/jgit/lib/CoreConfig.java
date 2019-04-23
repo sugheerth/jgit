@@ -1,4 +1,5 @@
 /*
+ * Copyright (C) 2013, Gunnar Wagenknecht
  * Copyright (C) 2010, Chris Aniszczyk <caniszczyk@gmail.com>
  * Copyright (C) 2009, Christian Halstrick <christian.halstrick@sap.com>
  * Copyright (C) 2009, Google Inc.
@@ -57,6 +58,7 @@ import org.eclipse.jgit.lib.Config.SectionParser;
 public class CoreConfig {
 	/** Key for {@link Config#get(SectionParser)}. */
 	public static final Config.SectionParser<CoreConfig> KEY = new SectionParser<CoreConfig>() {
+		@Override
 		public CoreConfig parse(final Config cfg) {
 			return new CoreConfig(cfg);
 		}
@@ -64,14 +66,73 @@ public class CoreConfig {
 
 	/** Permissible values for {@code core.autocrlf}. */
 	public static enum AutoCRLF {
-		/** Automatic CRLF->LF conversion is disabled. */
+		/** Automatic CRLF-&gt;LF conversion is disabled. */
 		FALSE,
 
-		/** Automatic CRLF->LF conversion is enabled. */
+		/** Automatic CRLF-&gt;LF conversion is enabled. */
 		TRUE,
 
-		/** CRLF->LF performed, but no LF->CRLF. */
+		/** CRLF-&gt;LF performed, but no LF-&gt;CRLF. */
 		INPUT;
+	}
+
+	/**
+	 * Permissible values for {@code core.eol}.
+	 * <p>
+	 * https://git-scm.com/docs/gitattributes
+	 *
+	 * @since 4.3
+	 */
+	public static enum EOL {
+		/** checkin with LF, checkout with CRLF. */
+		CRLF,
+
+		/** checkin with LF, checkout without conversion. */
+		LF,
+
+		/** use the platform's native line ending. */
+		NATIVE;
+	}
+
+	/**
+	 * EOL stream conversion protocol
+	 *
+	 * @since 4.3
+	 */
+	public static enum EolStreamType {
+		/** convert to CRLF without binary detection */
+		TEXT_CRLF,
+
+		/** convert to LF without binary detection */
+		TEXT_LF,
+
+		/** convert to CRLF with binary detection */
+		AUTO_CRLF,
+
+		/** convert to LF with binary detection */
+		AUTO_LF,
+
+		/** do not convert */
+		DIRECT;
+	}
+
+	/**
+	 * Permissible values for {@code core.checkstat}
+	 *
+	 * @since 3.0
+	 */
+	public static enum CheckStat {
+		/**
+		 * Only check the size and whole second part of time stamp when
+		 * comparing the stat info in the dircache with actual file stat info.
+		 */
+		MINIMAL,
+
+		/**
+		 * Check as much of the dircache stat info as possible. Implementation
+		 * limits may apply.
+		 */
+		DEFAULT
 	}
 
 	private final int compression;
@@ -82,6 +143,34 @@ public class CoreConfig {
 
 	private final String excludesfile;
 
+	private final String attributesfile;
+
+	/**
+	 * Options for symlink handling
+	 *
+	 * @since 3.3
+	 */
+	public static enum SymLinks {
+		/** Checkout symbolic links as plain files */
+		FALSE,
+		/** Checkout symbolic links as links */
+		TRUE
+	}
+
+	/**
+	 * Options for hiding files whose names start with a period
+	 *
+	 * @since 3.5
+	 */
+	public static enum HideDotFiles {
+		/** Do not hide .files */
+		FALSE,
+		/** Hide add .files */
+		TRUE,
+		/** Hide only .git */
+		DOTGITONLY
+	}
+
 	private CoreConfig(final Config rc) {
 		compression = rc.getInt(ConfigConstants.CONFIG_CORE_SECTION,
 				ConfigConstants.CONFIG_KEY_COMPRESSION, DEFAULT_COMPRESSION);
@@ -91,6 +180,8 @@ public class CoreConfig {
 				ConfigConstants.CONFIG_KEY_LOGALLREFUPDATES, true);
 		excludesfile = rc.getString(ConfigConstants.CONFIG_CORE_SECTION, null,
 				ConfigConstants.CONFIG_KEY_EXCLUDESFILE);
+		attributesfile = rc.getString(ConfigConstants.CONFIG_CORE_SECTION,
+				null, ConfigConstants.CONFIG_KEY_ATTRIBUTESFILE);
 	}
 
 	/**
@@ -119,5 +210,13 @@ public class CoreConfig {
 	 */
 	public String getExcludesFile() {
 		return excludesfile;
+	}
+
+	/**
+	 * @return path of attributesfile
+	 * @since 3.7
+	 */
+	public String getAttributesFile() {
+		return attributesfile;
 	}
 }

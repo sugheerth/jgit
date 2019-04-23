@@ -53,22 +53,25 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.TimeUnit;
+import java.util.Set;
+import java.util.TreeSet;
 
+import org.eclipse.jgit.dircache.DirCache;
+import org.eclipse.jgit.dircache.DirCacheEntry;
+import org.eclipse.jgit.internal.storage.file.FileRepository;
+import org.eclipse.jgit.lib.ConfigConstants;
 import org.eclipse.jgit.lib.Constants;
+import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.PersonIdent;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.lib.RepositoryCache;
 import org.eclipse.jgit.storage.file.FileBasedConfig;
-import org.eclipse.jgit.storage.file.FileRepository;
-import org.eclipse.jgit.storage.file.WindowCache;
 import org.eclipse.jgit.storage.file.WindowCacheConfig;
 import org.eclipse.jgit.util.FS;
 import org.eclipse.jgit.util.FileUtils;
-import org.eclipse.jgit.util.IO;
 import org.eclipse.jgit.util.SystemReader;
 import org.junit.After;
 import org.junit.Before;
@@ -91,10 +94,6 @@ import org.junit.Before;
  * descriptors or address space for the test process.
  */
 public abstract class LocalDiskRepositoryTestCase {
-	private static Thread shutdownHook;
-
-	private static int testCount;
-
 	private static final boolean useMMAP = "true".equals(System
 			.getProperty("jgit.junit.usemmap"));
 
@@ -104,66 +103,58 @@ public abstract class LocalDiskRepositoryTestCase {
 	/** A fake (but stable) identity for committer fields in the test. */
 	protected PersonIdent committer;
 
-	private final File trash = new File(new File("target"), "trash");
+	/**
+	 * A {@link SystemReader} used to coordinate time, envars, etc.
+	 * @since 4.2
+	 */
+	protected MockSystemReader mockSystemReader;
 
-	private final List<Repository> toClose = new ArrayList<Repository>();
-
-	private MockSystemReader mockSystemReader;
+	private final Set<Repository> toClose = new HashSet<>();
+	private File tmp;
 
 	@Before
 	public void setUp() throws Exception {
-
-		synchronized(this) {
-			if (shutdownHook == null) {
-				shutdownHook = new Thread() {
-					@Override
-					public void run() {
-						// On windows accidentally open files or memory
-						// mapped regions may prevent files from being deleted.
-						// Suggesting a GC increases the likelihood that our
-						// test repositories actually get removed after the
-						// tests, even in the case of failure.
-						System.gc();
-						recursiveDelete("SHUTDOWN", trash, false, false);
-					}
-				};
-				Runtime.getRuntime().addShutdownHook(shutdownHook);
-			}
-		}
-		recursiveDelete(testId(), trash, true, false);
+		tmp = File.createTempFile("jgit_test_", "_tmp");
+		CleanupThread.deleteOnShutdown(tmp);
+		if (!tmp.delete() || !tmp.mkdir())
+			throw new IOException("Cannot create " + tmp);
 
 		mockSystemReader = new MockSystemReader();
-		mockSystemReader.userGitConfig = new FileBasedConfig(new File(trash,
+		mockSystemReader.userGitConfig = new FileBasedConfig(new File(tmp,
 				"usergitconfig"), FS.DETECTED);
+		// We have to set autoDetach to false for tests, because tests expect to be able
+		// to clean up by recursively removing the repository, and background GC might be
+		// in the middle of writing or deleting files, which would disrupt this.
+		mockSystemReader.userGitConfig.setBoolean(ConfigConstants.CONFIG_GC_SECTION,
+				null, ConfigConstants.CONFIG_KEY_AUTODETACH, false);
+		mockSystemReader.userGitConfig.save();
 		ceilTestDirectories(getCeilings());
 		SystemReader.setInstance(mockSystemReader);
 
-		final long now = mockSystemReader.getCurrentTime();
-		final int tz = mockSystemReader.getTimezone(now);
 		author = new PersonIdent("J. Author", "jauthor@example.com");
-		author = new PersonIdent(author, now, tz);
-
 		committer = new PersonIdent("J. Committer", "jcommitter@example.com");
-		committer = new PersonIdent(committer, now, tz);
 
 		final WindowCacheConfig c = new WindowCacheConfig();
 		c.setPackedGitLimit(128 * WindowCacheConfig.KB);
 		c.setPackedGitWindowSize(8 * WindowCacheConfig.KB);
 		c.setPackedGitMMAP(useMMAP);
 		c.setDeltaBaseCacheLimit(8 * WindowCacheConfig.KB);
-		WindowCache.reconfigure(c);
+		c.install();
 	}
 
+	protected File getTemporaryDirectory() {
+		return tmp.getAbsoluteFile();
+	}
 
 	protected List<File> getCeilings() {
-		return Collections.singletonList(trash.getParentFile().getAbsoluteFile());
+		return Collections.singletonList(getTemporaryDirectory());
 	}
 
 	private void ceilTestDirectories(List<File> ceilings) {
 		mockSystemReader.setProperty(Constants.GIT_CEILING_DIRECTORIES_KEY, makePath(ceilings));
 	}
 
-	private String makePath(List<?> objects) {
+	private static String makePath(List<?> objects) {
 		final StringBuilder stringBuilder = new StringBuilder();
 		for (Object object : objects) {
 			if (stringBuilder.length() > 0)
@@ -186,15 +177,18 @@ public abstract class LocalDiskRepositoryTestCase {
 		//
 		if (useMMAP)
 			System.gc();
+		if (tmp != null)
+			recursiveDelete(tmp, false, true);
+		if (tmp != null && !tmp.exists())
+			CleanupThread.removed(tmp);
 
-		recursiveDelete(testId(), trash, false, true);
+		SystemReader.setInstance(null);
 	}
 
 	/** Increment the {@link #author} and {@link #committer} times. */
 	protected void tick() {
-		final long delta = TimeUnit.MILLISECONDS.convert(5 * 60,
-				TimeUnit.SECONDS);
-		final long now = author.getWhen().getTime() + delta;
+		mockSystemReader.tick(5 * 60);
+		final long now = mockSystemReader.getCurrentTime();
 		final int tz = mockSystemReader.getTimezone(now);
 
 		author = new PersonIdent(author, now, tz);
@@ -208,11 +202,11 @@ public abstract class LocalDiskRepositoryTestCase {
 	 *            the recursively directory to delete, if present.
 	 */
 	protected void recursiveDelete(final File dir) {
-		recursiveDelete(testId(), dir, false, true);
+		recursiveDelete(dir, false, true);
 	}
 
-	private static boolean recursiveDelete(final String testName,
-			final File dir, boolean silent, boolean failOnError) {
+	private static boolean recursiveDelete(final File dir,
+			boolean silent, boolean failOnError) {
 		assert !(silent && failOnError);
 		if (!dir.exists())
 			return silent;
@@ -221,36 +215,124 @@ public abstract class LocalDiskRepositoryTestCase {
 			for (int k = 0; k < ls.length; k++) {
 				final File e = ls[k];
 				if (e.isDirectory())
-					silent = recursiveDelete(testName, e, silent, failOnError);
+					silent = recursiveDelete(e, silent, failOnError);
 				else if (!e.delete()) {
 					if (!silent)
-						reportDeleteFailure(testName, failOnError, e);
+						reportDeleteFailure(failOnError, e);
 					silent = !failOnError;
 				}
 			}
 		if (!dir.delete()) {
 			if (!silent)
-				reportDeleteFailure(testName, failOnError, dir);
+				reportDeleteFailure(failOnError, dir);
 			silent = !failOnError;
 		}
 		return silent;
 	}
 
-	private static void reportDeleteFailure(final String testName,
-			final boolean failOnError, final File e) {
-		final String severity;
-		if (failOnError)
-			severity = "ERROR";
-		else
-			severity = "WARNING";
-
-		final String msg = severity + ": Failed to delete " + e + " in "
-				+ testName;
+	private static void reportDeleteFailure(boolean failOnError, File e) {
+		String severity = failOnError ? "ERROR" : "WARNING";
+		String msg = severity + ": Failed to delete " + e;
 		if (failOnError)
 			fail(msg);
 		else
 			System.err.println(msg);
 	}
+
+	public static final int MOD_TIME = 1;
+
+	public static final int SMUDGE = 2;
+
+	public static final int LENGTH = 4;
+
+	public static final int CONTENT_ID = 8;
+
+	public static final int CONTENT = 16;
+
+	public static final int ASSUME_UNCHANGED = 32;
+
+	/**
+	 * Represent the state of the index in one String. This representation is
+	 * useful when writing tests which do assertions on the state of the index.
+	 * By default information about path, mode, stage (if different from 0) is
+	 * included. A bitmask controls which additional info about
+	 * modificationTimes, smudge state and length is included.
+	 * <p>
+	 * The format of the returned string is described with this BNF:
+	 *
+	 * <pre>
+	 * result = ( "[" path mode stage? time? smudge? length? sha1? content? "]" )* .
+	 * mode = ", mode:" number .
+	 * stage = ", stage:" number .
+	 * time = ", time:t" timestamp-index .
+	 * smudge = "" | ", smudged" .
+	 * length = ", length:" number .
+	 * sha1 = ", sha1:" hex-sha1 .
+	 * content = ", content:" blob-data .
+	 * </pre>
+	 *
+	 * 'stage' is only presented when the stage is different from 0. All
+	 * reported time stamps are mapped to strings like "t0", "t1", ... "tn". The
+	 * smallest reported time-stamp will be called "t0". This allows to write
+	 * assertions against the string although the concrete value of the time
+	 * stamps is unknown.
+	 *
+	 * @param repo
+	 *            the repository the index state should be determined for
+	 *
+	 * @param includedOptions
+	 *            a bitmask constructed out of the constants {@link #MOD_TIME},
+	 *            {@link #SMUDGE}, {@link #LENGTH}, {@link #CONTENT_ID} and
+	 *            {@link #CONTENT} controlling which info is present in the
+	 *            resulting string.
+	 * @return a string encoding the index state
+	 * @throws IllegalStateException
+	 * @throws IOException
+	 */
+	public static String indexState(Repository repo, int includedOptions)
+			throws IllegalStateException, IOException {
+		DirCache dc = repo.readDirCache();
+		StringBuilder sb = new StringBuilder();
+		TreeSet<Long> timeStamps = new TreeSet<>();
+
+		// iterate once over the dircache just to collect all time stamps
+		if (0 != (includedOptions & MOD_TIME)) {
+			for (int i=0; i<dc.getEntryCount(); ++i)
+				timeStamps.add(Long.valueOf(dc.getEntry(i).getLastModified()));
+		}
+
+		// iterate again, now produce the result string
+		for (int i=0; i<dc.getEntryCount(); ++i) {
+			DirCacheEntry entry = dc.getEntry(i);
+			sb.append("["+entry.getPathString()+", mode:" + entry.getFileMode());
+			int stage = entry.getStage();
+			if (stage != 0)
+				sb.append(", stage:" + stage);
+			if (0 != (includedOptions & MOD_TIME)) {
+				sb.append(", time:t"+
+						timeStamps.headSet(Long.valueOf(entry.getLastModified())).size());
+			}
+			if (0 != (includedOptions & SMUDGE))
+				if (entry.isSmudged())
+					sb.append(", smudged");
+			if (0 != (includedOptions & LENGTH))
+				sb.append(", length:"
+						+ Integer.toString(entry.getLength()));
+			if (0 != (includedOptions & CONTENT_ID))
+				sb.append(", sha1:" + ObjectId.toString(entry.getObjectId()));
+			if (0 != (includedOptions & CONTENT)) {
+				sb.append(", content:"
+						+ new String(repo.open(entry.getObjectId(),
+						Constants.OBJ_BLOB).getCachedBytes(), "UTF-8"));
+			}
+			if (0 != (includedOptions & ASSUME_UNCHANGED))
+				sb.append(", assume-unchanged:"
+						+ Boolean.toString(entry.isAssumeValid()));
+			sb.append("]");
+		}
+		return sb.toString();
+	}
+
 
 	/**
 	 * Creates a new empty bare repository.
@@ -284,12 +366,32 @@ public abstract class LocalDiskRepositoryTestCase {
 	 * @throws IOException
 	 *             the repository could not be created in the temporary area
 	 */
-	private FileRepository createRepository(boolean bare) throws IOException {
+	private FileRepository createRepository(boolean bare)
+			throws IOException {
+		return createRepository(bare, true /* auto close */);
+	}
+
+	/**
+	 * Creates a new empty repository.
+	 *
+	 * @param bare
+	 *            true to create a bare repository; false to make a repository
+	 *            within its working directory
+	 * @param autoClose
+	 *            auto close the repository in #tearDown
+	 * @return the newly created repository, opened for access
+	 * @throws IOException
+	 *             the repository could not be created in the temporary area
+	 */
+	public FileRepository createRepository(boolean bare, boolean autoClose)
+			throws IOException {
 		File gitdir = createUniqueTestGitDir(bare);
 		FileRepository db = new FileRepository(gitdir);
 		assertFalse(gitdir.exists());
-		db.create();
-		toClose.add(db);
+		db.create(bare);
+		if (autoClose) {
+			addRepoToClose(db);
+		}
 		return db;
 	}
 
@@ -304,10 +406,6 @@ public abstract class LocalDiskRepositoryTestCase {
 		toClose.add(r);
 	}
 
-	private String createUniqueTestFolderPrefix() {
-		return "test" + (System.currentTimeMillis() + "_" + (testCount++));
-	}
-
 	/**
 	 * Creates a unique directory for a test
 	 *
@@ -317,9 +415,7 @@ public abstract class LocalDiskRepositoryTestCase {
 	 * @throws IOException
 	 */
 	protected File createTempDirectory(String name) throws IOException {
-		String gitdirName = createUniqueTestFolderPrefix();
-		File parent = new File(trash, gitdirName);
-		File directory = new File(parent, name);
+		File directory = new File(createTempFile(), name);
 		FileUtils.mkdirs(directory);
 		return directory.getCanonicalFile();
 	}
@@ -334,16 +430,31 @@ public abstract class LocalDiskRepositoryTestCase {
 	 * @throws IOException
 	 */
 	protected File createUniqueTestGitDir(boolean bare) throws IOException {
-		String gitdirName = createUniqueTestFolderPrefix();
+		String gitdirName = createTempFile().getPath();
 		if (!bare)
 			gitdirName += "/";
-		gitdirName += Constants.DOT_GIT;
-		File gitdir = new File(trash, gitdirName);
-		return gitdir.getCanonicalFile();
+		return new File(gitdirName + Constants.DOT_GIT);
 	}
 
+	/**
+	 * Allocates a new unique file path that does not exist.
+	 * <p>
+	 * Unlike the standard {@code File.createTempFile} the returned path does
+	 * not exist, but may be created by another thread in a race with the
+	 * caller. Good luck.
+	 * <p>
+	 * This method is inherently unsafe due to a race condition between creating
+	 * the name and the first use that reserves it.
+	 *
+	 * @return a unique path that does not exist.
+	 * @throws IOException
+	 */
 	protected File createTempFile() throws IOException {
-		return new File(trash, "tmp-" + UUID.randomUUID()).getCanonicalFile();
+		File p = File.createTempFile("tmp_", "", tmp);
+		if (!p.delete()) {
+			throw new IOException("Cannot obtain unique path " + tmp);
+		}
+		return p;
 	}
 
 	/**
@@ -401,7 +512,7 @@ public abstract class LocalDiskRepositoryTestCase {
 	 *             the file could not be written.
 	 */
 	protected File write(final String body) throws IOException {
-		final File f = File.createTempFile("temp", "txt", trash);
+		final File f = File.createTempFile("temp", "txt", tmp);
 		try {
 			write(f, body);
 			return f;
@@ -435,19 +546,8 @@ public abstract class LocalDiskRepositoryTestCase {
 		JGitTestUtil.write(f, body);
 	}
 
-	/**
-	 * Fully read a UTF-8 file and return as a string.
-	 *
-	 * @param f
-	 *            file to read the content of.
-	 * @return UTF-8 decoded content of the file, empty string if the file
-	 *         exists but has no content.
-	 * @throws IOException
-	 *             the file does not exist, or could not be read.
-	 */
 	protected String read(final File f) throws IOException {
-		final byte[] body = IO.readFully(f);
-		return new String(body, 0, body.length, "UTF-8");
+		return JGitTestUtil.read(f);
 	}
 
 	private static String[] toEnvArray(final Map<String, String> env) {
@@ -459,11 +559,44 @@ public abstract class LocalDiskRepositoryTestCase {
 	}
 
 	private static HashMap<String, String> cloneEnv() {
-		return new HashMap<String, String>(System.getenv());
+		return new HashMap<>(System.getenv());
 	}
 
-	private String testId() {
-		return getClass().getName() + "." + testCount;
-	}
+	private static final class CleanupThread extends Thread {
+		private static final CleanupThread me;
+		static {
+			me = new CleanupThread();
+			Runtime.getRuntime().addShutdownHook(me);
+		}
 
+		static void deleteOnShutdown(File tmp) {
+			synchronized (me) {
+				me.toDelete.add(tmp);
+			}
+		}
+
+		static void removed(File tmp) {
+			synchronized (me) {
+				me.toDelete.remove(tmp);
+			}
+		}
+
+		private final List<File> toDelete = new ArrayList<>();
+
+		@Override
+		public void run() {
+			// On windows accidentally open files or memory
+			// mapped regions may prevent files from being deleted.
+			// Suggesting a GC increases the likelihood that our
+			// test repositories actually get removed after the
+			// tests, even in the case of failure.
+			System.gc();
+			synchronized (this) {
+				boolean silent = false;
+				boolean failOnError = false;
+				for (File tmp : toDelete)
+					recursiveDelete(tmp, silent, failOnError);
+			}
+		}
+	}
 }

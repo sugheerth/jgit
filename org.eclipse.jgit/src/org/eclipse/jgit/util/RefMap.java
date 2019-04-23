@@ -78,10 +78,10 @@ public class RefMap extends AbstractMap<String, Ref> {
 	 * All reference names in this map must start with this prefix. If the
 	 * prefix is not the empty string, it must end with a '/'.
 	 */
-	private final String prefix;
+	final String prefix;
 
 	/** Immutable collection of the packed references at construction time. */
-	private RefList<Ref> packed;
+	RefList<Ref> packed;
 
 	/**
 	 * Immutable collection of the loose references at construction time.
@@ -91,7 +91,7 @@ public class RefMap extends AbstractMap<String, Ref> {
 	 * are typically unresolved, so they only tell us who their target is, but
 	 * not the current value of the target.
 	 */
-	private RefList<Ref> loose;
+	RefList<Ref> loose;
 
 	/**
 	 * Immutable collection of resolved symbolic references.
@@ -101,17 +101,17 @@ public class RefMap extends AbstractMap<String, Ref> {
 	 * from {@link #loose}. Every entry in this list must be matched by an entry
 	 * in {@code loose}, otherwise it might be omitted by the map.
 	 */
-	private RefList<Ref> resolved;
+	RefList<Ref> resolved;
 
-	private int size;
+	int size;
 
-	private boolean sizeIsValid;
+	boolean sizeIsValid;
 
 	private Set<Entry<String, Ref>> entrySet;
 
 	/** Construct an empty map with a small initial capacity. */
 	public RefMap() {
-		prefix = "";
+		prefix = ""; //$NON-NLS-1$
 		packed = RefList.emptyList();
 		loose = RefList.emptyList();
 		resolved = RefList.emptyList();
@@ -267,7 +267,7 @@ public class RefMap extends AbstractMap<String, Ref> {
 			if (first)
 				first = false;
 			else
-				r.append(", ");
+				r.append(", "); //$NON-NLS-1$
 			r.append(ref);
 		}
 		r.append(']');
@@ -280,7 +280,7 @@ public class RefMap extends AbstractMap<String, Ref> {
 		return name;
 	}
 
-	private String toMapKey(Ref ref) {
+	String toMapKey(Ref ref) {
 		String name = ref.getName();
 		if (0 < prefix.length())
 			name = name.substring(prefix.length());
@@ -304,12 +304,14 @@ public class RefMap extends AbstractMap<String, Ref> {
 			}
 		}
 
+		@Override
 		public boolean hasNext() {
 			if (next == null)
 				next = peek();
 			return next != null;
 		}
 
+		@Override
 		public Entry<String, Ref> next() {
 			if (hasNext()) {
 				Entry<String, Ref> r = next;
@@ -367,6 +369,7 @@ public class RefMap extends AbstractMap<String, Ref> {
 			return null;
 		}
 
+		@Override
 		public void remove() {
 			throw new UnsupportedOperationException();
 		}
@@ -379,14 +382,17 @@ public class RefMap extends AbstractMap<String, Ref> {
 			this.ref = ref;
 		}
 
+		@Override
 		public String getKey() {
 			return toMapKey(ref);
 		}
 
+		@Override
 		public Ref getValue() {
 			return ref;
 		}
 
+		@Override
 		public Ref setValue(Ref value) {
 			Ref prior = put(getKey(), value);
 			ref = value;

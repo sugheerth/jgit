@@ -58,6 +58,9 @@ public class StreamCopyThread extends Thread {
 
 	private volatile boolean done;
 
+	/** Lock held by flush to avoid interrupting a write. */
+	private final Object writeLock;
+
 	/**
 	 * Create a thread to copy data from an input stream to an output stream.
 	 *
@@ -69,9 +72,10 @@ public class StreamCopyThread extends Thread {
 	 *            closed when the thread terminates.
 	 */
 	public StreamCopyThread(final InputStream i, final OutputStream o) {
-		setName(Thread.currentThread().getName() + "-StreamCopy");
+		setName(Thread.currentThread().getName() + "-StreamCopy"); //$NON-NLS-1$
 		src = i;
 		dst = o;
+		writeLock = new Object();
 	}
 
 	/**
@@ -81,8 +85,11 @@ public class StreamCopyThread extends Thread {
 	 * happen at some future point in time, when the thread wakes up to process
 	 * the request.
 	 */
+	@Deprecated
 	public void flush() {
-		interrupt();
+		synchronized (writeLock) {
+			interrupt();
+		}
 	}
 
 	/**
@@ -109,12 +116,18 @@ public class StreamCopyThread extends Thread {
 	public void run() {
 		try {
 			final byte[] buf = new byte[BUFFER_SIZE];
-			int interruptCounter = 0;
+			boolean readInterrupted = false;
 			for (;;) {
 				try {
-					if (interruptCounter > 0) {
-						dst.flush();
-						interruptCounter--;
+					if (readInterrupted) {
+						synchronized (writeLock) {
+							boolean interruptedAgain = Thread.interrupted();
+							dst.flush();
+							if (interruptedAgain) {
+								interrupt();
+							}
+						}
+						readInterrupted = false;
 					}
 
 					if (done)
@@ -124,26 +137,18 @@ public class StreamCopyThread extends Thread {
 					try {
 						n = src.read(buf);
 					} catch (InterruptedIOException wakey) {
-						interruptCounter++;
+						readInterrupted = true;
 						continue;
 					}
 					if (n < 0)
 						break;
 
-					boolean writeInterrupted = false;
-					for (;;) {
-						try {
-							dst.write(buf, 0, n);
-						} catch (InterruptedIOException wakey) {
-							writeInterrupted = true;
-							continue;
-						}
-
-						// set interrupt status, which will be checked
-						// when we block in src.read
-						if (writeInterrupted)
+					synchronized (writeLock) {
+						boolean writeInterrupted = Thread.interrupted();
+						dst.write(buf, 0, n);
+						if (writeInterrupted) {
 							interrupt();
-						break;
+						}
 					}
 				} catch (IOException e) {
 					break;

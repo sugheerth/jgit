@@ -51,7 +51,7 @@
   <parent>
     <groupId>org.eclipse.jgit</groupId>
     <artifactId>org.eclipse.jgit-parent</artifactId>
-    <version>2.1.0-SNAPSHOT</version>
+    <version>4.7.8-SNAPSHOT</version>
   </parent>
 
   <artifactId>org.eclipse.jgit.http.test</artifactId>
@@ -60,7 +60,9 @@
   <description>
     Tests for the HTTP transport.
   </description>
-
+  <properties>
+      <maven.javadoc.skip>true</maven.javadoc.skip>
+  </properties>
   <dependencies>
     <dependency>
       <groupId>junit</groupId>
@@ -71,6 +73,12 @@
     <dependency>
       <groupId>org.eclipse.jgit</groupId>
       <artifactId>org.eclipse.jgit</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.eclipse.jgit</groupId>
+      <artifactId>org.eclipse.jgit.http.apache</artifactId>
       <version>${project.version}</version>
       <scope>test</scope>
     </dependency>
@@ -104,6 +112,7 @@
   </dependencies>
 
   <build>
+    <sourceDirectory>src/</sourceDirectory>
     <testSourceDirectory>tst/</testSourceDirectory>
 
     <testResources>
@@ -111,5 +120,28 @@
         <directory>tst-rsrc/</directory>
       </testResource>
     </testResources>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <executions>
+          <execution>
+            <goals>
+              <goal>test-jar</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <argLine>-Djava.io.tmpdir=${project.build.directory}  -Xmx300m</argLine>
+          <includes>
+            <include>**/*Test.java</include>
+            <include>**/*Tests.java</include>
+          </includes>
+        </configuration>
+      </plugin>
+    </plugins>
   </build>
 </project>

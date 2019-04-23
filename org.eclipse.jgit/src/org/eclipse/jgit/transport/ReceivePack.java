@@ -43,14 +43,22 @@
 
 package org.eclipse.jgit.transport;
 
-import static org.eclipse.jgit.transport.BasePackPushConnection.CAPABILITY_REPORT_STATUS;
+import static org.eclipse.jgit.transport.GitProtocolConstants.CAPABILITY_ATOMIC;
+import static org.eclipse.jgit.transport.GitProtocolConstants.CAPABILITY_PUSH_OPTIONS;
+import static org.eclipse.jgit.transport.GitProtocolConstants.CAPABILITY_REPORT_STATUS;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
+import org.eclipse.jgit.annotations.Nullable;
 import org.eclipse.jgit.errors.UnpackException;
+import org.eclipse.jgit.lib.ConfigConstants;
 import org.eclipse.jgit.lib.Constants;
+import org.eclipse.jgit.lib.NullProgressMonitor;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.transport.ReceiveCommand.Result;
 import org.eclipse.jgit.transport.RefAdvertiser.PacketLineOutRefAdvertiser;
@@ -70,6 +78,10 @@ public class ReceivePack extends BaseReceivePack {
 
 	private boolean echoCommandFailures;
 
+	/** Whether the client intends to use push options. */
+	private boolean usePushOptions;
+	private List<String> pushOptions;
+
 	/**
 	 * Create a new pack receive for an open repository.
 	 *
@@ -80,6 +92,42 @@ public class ReceivePack extends BaseReceivePack {
 		super(into);
 		preReceive = PreReceiveHook.NULL;
 		postReceive = PostReceiveHook.NULL;
+	}
+
+	/**
+	 * Gets an unmodifiable view of the option strings associated with the push.
+	 *
+	 * @return an unmodifiable view of pushOptions, or null (if pushOptions is).
+	 * @since 4.5
+	 */
+	@Nullable
+	public List<String> getPushOptions() {
+		if (isAllowPushOptions() && usePushOptions) {
+			return Collections.unmodifiableList(pushOptions);
+		}
+
+		// The client doesn't support push options. Return null to
+		// distinguish this from the case where the client declared support
+		// for push options and sent an empty list of them.
+		return null;
+	}
+
+	/**
+	 * Set the push options supplied by the client.
+	 * <p>
+	 * Should only be called if reconstructing an instance without going through
+	 * the normal {@link #recvCommands()} flow.
+	 *
+	 * @param options
+	 *            the list of options supplied by the client. The
+	 *            {@code ReceivePack} instance takes ownership of this list.
+	 *            Callers are encouraged to first create a copy if the list may
+	 *            be modified later.
+	 * @since 4.5
+	 */
+	public void setPushOptions(@Nullable List<String> options) {
+		usePushOptions = options != null;
+		pushOptions = options;
 	}
 
 	/** @return the hook invoked before updates occur. */
@@ -170,7 +218,22 @@ public class ReceivePack extends BaseReceivePack {
 	@Override
 	protected void enableCapabilities() {
 		reportStatus = isCapabilityEnabled(CAPABILITY_REPORT_STATUS);
+		usePushOptions = isCapabilityEnabled(CAPABILITY_PUSH_OPTIONS);
 		super.enableCapabilities();
+	}
+
+	@Override
+	void readPostCommands(PacketLineIn in) throws IOException {
+		if (usePushOptions) {
+			pushOptions = new ArrayList<>(4);
+			for (;;) {
+				String option = in.readString();
+				if (option == PacketLineIn.END) {
+					break;
+				}
+				pushOptions.add(option);
+			}
+		}
 	}
 
 	private void service() throws IOException {
@@ -183,24 +246,26 @@ public class ReceivePack extends BaseReceivePack {
 			return;
 		recvCommands();
 		if (hasCommands()) {
-			enableCapabilities();
-
 			Throwable unpackError = null;
 			if (needPack()) {
 				try {
 					receivePackAndCheckConnectivity();
-				} catch (IOException err) {
-					unpackError = err;
-				} catch (RuntimeException err) {
-					unpackError = err;
-				} catch (Error err) {
+				} catch (IOException | RuntimeException | Error err) {
 					unpackError = err;
 				}
 			}
 
 			if (unpackError == null) {
+				boolean atomic = isCapabilityEnabled(CAPABILITY_ATOMIC);
+				setAtomic(atomic);
+
 				validateCommands();
+				if (atomic && anyRejects())
+					failPendingCommands();
+
 				preReceive.onPreReceive(this, filterCommands(Result.NOT_ATTEMPTED));
+				if (atomic && anyRejects())
+					failPendingCommands();
 				executeCommands();
 			}
 			unlockPack();
@@ -208,8 +273,9 @@ public class ReceivePack extends BaseReceivePack {
 			if (reportStatus) {
 				if (echoCommandFailures && msgOut != null) {
 					sendStatusReport(false, unpackError, new Reporter() {
+						@Override
 						void sendString(final String s) throws IOException {
-							msgOut.write(Constants.encode(s + "\n"));
+							msgOut.write(Constants.encode(s + "\n")); //$NON-NLS-1$
 						}
 					});
 					msgOut.flush();
@@ -220,28 +286,47 @@ public class ReceivePack extends BaseReceivePack {
 					}
 				}
 				sendStatusReport(true, unpackError, new Reporter() {
+					@Override
 					void sendString(final String s) throws IOException {
-						pckOut.writeString(s + "\n");
+						pckOut.writeString(s + "\n"); //$NON-NLS-1$
 					}
 				});
 				pckOut.end();
 			} else if (msgOut != null) {
 				sendStatusReport(false, unpackError, new Reporter() {
+					@Override
 					void sendString(final String s) throws IOException {
-						msgOut.write(Constants.encode(s + "\n"));
+						msgOut.write(Constants.encode(s + "\n")); //$NON-NLS-1$
 					}
 				});
 			}
 
-			postReceive.onPostReceive(this, filterCommands(Result.OK));
-
-			if (unpackError != null)
+			if (unpackError != null) {
+				// we already know which exception to throw. Ignore
+				// potential additional exceptions raised in postReceiveHooks
+				try {
+					postReceive.onPostReceive(this, filterCommands(Result.OK));
+				} catch (Throwable e) {
+					// empty
+				}
 				throw new UnpackException(unpackError);
+			}
+			postReceive.onPostReceive(this, filterCommands(Result.OK));
+			autoGc();
 		}
+	}
+
+	private void autoGc() {
+		Repository repo = getRepository();
+		if (!repo.getConfig().getBoolean(ConfigConstants.CONFIG_RECEIVE_SECTION,
+				ConfigConstants.CONFIG_KEY_AUTOGC, true)) {
+			return;
+		}
+		repo.autoGC(NullProgressMonitor.INSTANCE);
 	}
 
 	@Override
 	protected String getLockMessageProcessName() {
-		return "jgit receive-pack";
+		return "jgit receive-pack"; //$NON-NLS-1$
 	}
 }

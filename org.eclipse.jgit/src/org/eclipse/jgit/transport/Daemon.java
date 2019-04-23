@@ -79,7 +79,7 @@ public class Daemon {
 
 	private boolean run;
 
-	private Thread acceptThread;
+	Thread acceptThread;
 
 	private int timeout;
 
@@ -87,9 +87,9 @@ public class Daemon {
 
 	private volatile RepositoryResolver<DaemonClient> repositoryResolver;
 
-	private volatile UploadPackFactory<DaemonClient> uploadPackFactory;
+	volatile UploadPackFactory<DaemonClient> uploadPackFactory;
 
-	private volatile ReceivePackFactory<DaemonClient> receivePackFactory;
+	volatile ReceivePackFactory<DaemonClient> receivePackFactory;
 
 	/** Configure a daemon to listen on any available network port. */
 	public Daemon() {
@@ -103,13 +103,15 @@ public class Daemon {
 	 *            address to listen for connections on. If null, any available
 	 *            port will be chosen on all network interfaces.
 	 */
+	@SuppressWarnings("unchecked")
 	public Daemon(final InetSocketAddress addr) {
 		myAddress = addr;
-		processors = new ThreadGroup("Git-Daemon");
+		processors = new ThreadGroup("Git-Daemon"); //$NON-NLS-1$
 
 		repositoryResolver = (RepositoryResolver<DaemonClient>) RepositoryResolver.NONE;
 
 		uploadPackFactory = new UploadPackFactory<DaemonClient>() {
+			@Override
 			public UploadPack create(DaemonClient req, Repository db)
 					throws ServiceNotEnabledException,
 					ServiceNotAuthorizedException {
@@ -121,6 +123,7 @@ public class Daemon {
 		};
 
 		receivePackFactory = new ReceivePackFactory<DaemonClient>() {
+			@Override
 			public ReceivePack create(DaemonClient req, Repository db)
 					throws ServiceNotEnabledException,
 					ServiceNotAuthorizedException {
@@ -130,8 +133,8 @@ public class Daemon {
 				String host = peer.getCanonicalHostName();
 				if (host == null)
 					host = peer.getHostAddress();
-				String name = "anonymous";
-				String email = name + "@" + host;
+				String name = "anonymous"; //$NON-NLS-1$
+				String email = name + "@" + host; //$NON-NLS-1$
 				rp.setRefLogIdent(new PersonIdent(name, email));
 				rp.setTimeout(getTimeout());
 
@@ -140,7 +143,7 @@ public class Daemon {
 		};
 
 		services = new DaemonService[] {
-				new DaemonService("upload-pack", "uploadpack") {
+				new DaemonService("upload-pack", "uploadpack") { //$NON-NLS-1$ //$NON-NLS-2$
 					{
 						setEnabled(true);
 					}
@@ -155,7 +158,7 @@ public class Daemon {
 						OutputStream out = dc.getOutputStream();
 						up.upload(in, out, null);
 					}
-				}, new DaemonService("receive-pack", "receivepack") {
+				}, new DaemonService("receive-pack", "receivepack") { //$NON-NLS-1$ //$NON-NLS-2$
 					{
 						setEnabled(false);
 					}
@@ -188,8 +191,8 @@ public class Daemon {
 	 *         the requested service type.
 	 */
 	public synchronized DaemonService getService(String name) {
-		if (!name.startsWith("git-"))
-			name = "git-" + name;
+		if (!name.startsWith("git-")) //$NON-NLS-1$
+			name = "git-" + name; //$NON-NLS-1$
 		for (final DaemonService s : services) {
 			if (s.getCommandName().equals(name))
 				return s;
@@ -255,6 +258,16 @@ public class Daemon {
 	}
 
 	/**
+	 * Get the factory used to construct per-request ReceivePack.
+	 *
+	 * @return the factory.
+	 * @since 4.3
+	 */
+	public ReceivePackFactory<DaemonClient> getReceivePackFactory() {
+		return receivePackFactory;
+	}
+
+	/**
 	 * Set the factory to construct and configure per-request ReceivePack.
 	 *
 	 * @param factory
@@ -286,7 +299,8 @@ public class Daemon {
 		myAddress = (InetSocketAddress) listenSock.getLocalSocketAddress();
 
 		run = true;
-		acceptThread = new Thread(processors, "Git-Daemon-Accept") {
+		acceptThread = new Thread(processors, "Git-Daemon-Accept") { //$NON-NLS-1$
+			@Override
 			public void run() {
 				while (isRunning()) {
 					try {
@@ -325,14 +339,15 @@ public class Daemon {
 		}
 	}
 
-	private void startClient(final Socket s) {
+	void startClient(final Socket s) {
 		final DaemonClient dc = new DaemonClient(this);
 
 		final SocketAddress peer = s.getRemoteSocketAddress();
 		if (peer instanceof InetSocketAddress)
 			dc.setRemoteAddress(((InetSocketAddress) peer).getAddress());
 
-		new Thread(processors, "Git-Daemon-Client " + peer.toString()) {
+		new Thread(processors, "Git-Daemon-Client " + peer.toString()) { //$NON-NLS-1$
+			@Override
 			public void run() {
 				try {
 					dc.execute(s);
@@ -375,7 +390,7 @@ public class Daemon {
 
 		// git://thishost/path should always be name="/path" here
 		//
-		if (!name.startsWith("/"))
+		if (!name.startsWith("/")) //$NON-NLS-1$
 			return null;
 
 		try {

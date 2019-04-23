@@ -49,29 +49,41 @@
 
 package org.eclipse.jgit.storage.file;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.text.MessageFormat;
 
-import org.eclipse.jgit.errors.LockFailedException;
 import org.eclipse.jgit.errors.ConfigInvalidException;
+import org.eclipse.jgit.errors.LockFailedException;
 import org.eclipse.jgit.internal.JGitText;
+import org.eclipse.jgit.internal.storage.file.FileSnapshot;
+import org.eclipse.jgit.internal.storage.file.LockFile;
 import org.eclipse.jgit.lib.Config;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.StoredConfig;
 import org.eclipse.jgit.util.FS;
+import org.eclipse.jgit.util.FileUtils;
 import org.eclipse.jgit.util.IO;
 import org.eclipse.jgit.util.RawParseUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The configuration file that is stored in the file of the file system.
  */
 public class FileBasedConfig extends StoredConfig {
+	private final static Logger LOG = LoggerFactory
+			.getLogger(FileBasedConfig.class);
+
 	private final File configFile;
-	private final FS fs;
+
+	private boolean utf8Bom;
+
 	private volatile FileSnapshot snapshot;
+
 	private volatile ObjectId hash;
 
 	/**
@@ -101,7 +113,6 @@ public class FileBasedConfig extends StoredConfig {
 	public FileBasedConfig(Config base, File cfgLocation, FS fs) {
 		super(base);
 		configFile = cfgLocation;
-		this.fs = fs;
 		this.snapshot = FileSnapshot.DIRTY;
 		this.hash = ObjectId.zeroId();
 	}
@@ -130,30 +141,58 @@ public class FileBasedConfig extends StoredConfig {
 	 */
 	@Override
 	public void load() throws IOException, ConfigInvalidException {
-		final FileSnapshot oldSnapshot = snapshot;
-		final FileSnapshot newSnapshot = FileSnapshot.save(getFile());
-		try {
-			final byte[] in = IO.readFully(getFile());
-			final ObjectId newHash = hash(in);
-			if (hash.equals(newHash)) {
-				if (oldSnapshot.equals(newSnapshot))
-					oldSnapshot.setClean(newSnapshot);
-				else
+		final int maxStaleRetries = 5;
+		int retries = 0;
+		while (true) {
+			final FileSnapshot oldSnapshot = snapshot;
+			final FileSnapshot newSnapshot = FileSnapshot.save(getFile());
+			try {
+				final byte[] in = IO.readFully(getFile());
+				final ObjectId newHash = hash(in);
+				if (hash.equals(newHash)) {
+					if (oldSnapshot.equals(newSnapshot)) {
+						oldSnapshot.setClean(newSnapshot);
+					} else {
+						snapshot = newSnapshot;
+					}
+				} else {
+					final String decoded;
+					if (isUtf8(in)) {
+						decoded = RawParseUtils.decode(
+								RawParseUtils.UTF8_CHARSET, in, 3, in.length);
+						utf8Bom = true;
+					} else {
+						decoded = RawParseUtils.decode(in);
+					}
+					fromText(decoded);
 					snapshot = newSnapshot;
-			} else {
-				fromText(RawParseUtils.decode(in));
+					hash = newHash;
+				}
+				return;
+			} catch (FileNotFoundException noFile) {
+				if (configFile.exists()) {
+					throw noFile;
+				}
+				clear();
 				snapshot = newSnapshot;
-				hash = newHash;
+				return;
+			} catch (IOException e) {
+				if (FileUtils.isStaleFileHandle(e)
+						&& retries < maxStaleRetries) {
+					if (LOG.isDebugEnabled()) {
+						LOG.debug(MessageFormat.format(
+								JGitText.get().configHandleIsStale,
+								Integer.valueOf(retries)), e);
+					}
+					retries++;
+					continue;
+				}
+				throw new IOException(MessageFormat
+						.format(JGitText.get().cannotReadFile, getFile()), e);
+			} catch (ConfigInvalidException e) {
+				throw new ConfigInvalidException(MessageFormat
+						.format(JGitText.get().cannotReadFile, getFile()), e);
 			}
-		} catch (FileNotFoundException noFile) {
-			clear();
-			snapshot = newSnapshot;
-		} catch (IOException e) {
-			final IOException e2 = new IOException(MessageFormat.format(JGitText.get().cannotReadFile, getFile()));
-			e2.initCause(e);
-			throw e2;
-		} catch (ConfigInvalidException e) {
-			throw new ConfigInvalidException(MessageFormat.format(JGitText.get().cannotReadFile, getFile()), e);
 		}
 	}
 
@@ -169,9 +208,22 @@ public class FileBasedConfig extends StoredConfig {
 	 * @throws IOException
 	 *             the file could not be written.
 	 */
+	@Override
 	public void save() throws IOException {
-		final byte[] out = Constants.encode(toText());
-		final LockFile lf = new LockFile(getFile(), fs);
+		final byte[] out;
+		final String text = toText();
+		if (utf8Bom) {
+			final ByteArrayOutputStream bos = new ByteArrayOutputStream();
+			bos.write(0xEF);
+			bos.write(0xBB);
+			bos.write(0xBF);
+			bos.write(text.getBytes(RawParseUtils.UTF8_CHARSET.name()));
+			out = bos.toByteArray();
+		} else {
+			out = Constants.encode(text);
+		}
+
+		final LockFile lf = new LockFile(getFile());
 		if (!lf.lock())
 			throw new LockFailedException(getFile());
 		try {
@@ -198,6 +250,7 @@ public class FileBasedConfig extends StoredConfig {
 		return ObjectId.fromRaw(Constants.newMessageDigest().digest(rawText));
 	}
 
+	@SuppressWarnings("nls")
 	@Override
 	public String toString() {
 		return getClass().getSimpleName() + "[" + getFile().getPath() + "]";

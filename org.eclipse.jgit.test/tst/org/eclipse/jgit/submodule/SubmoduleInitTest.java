@@ -60,11 +60,11 @@ import org.eclipse.jgit.dircache.DirCacheEditor;
 import org.eclipse.jgit.dircache.DirCacheEditor.PathEdit;
 import org.eclipse.jgit.dircache.DirCacheEntry;
 import org.eclipse.jgit.errors.ConfigInvalidException;
+import org.eclipse.jgit.junit.RepositoryTestCase;
 import org.eclipse.jgit.lib.ConfigConstants;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.FileMode;
 import org.eclipse.jgit.lib.ObjectId;
-import org.eclipse.jgit.lib.RepositoryTestCase;
 import org.eclipse.jgit.storage.file.FileBasedConfig;
 import org.junit.Test;
 
@@ -246,9 +246,8 @@ public class SubmoduleInitTest extends RepositoryTestCase {
 		if (File.separatorChar == '\\')
 			base = base.replace('\\', '/');
 		FileBasedConfig config = db.getConfig();
-		config.setString(ConfigConstants.CONFIG_REMOTE_SECTION,
-				Constants.DEFAULT_REMOTE_NAME, ConfigConstants.CONFIG_KEY_URL,
-				null);
+		config.unset(ConfigConstants.CONFIG_REMOTE_SECTION,
+				Constants.DEFAULT_REMOTE_NAME, ConfigConstants.CONFIG_KEY_URL);
 		config.save();
 
 		SubmoduleWalk generator = SubmoduleWalk.forIndex(db);
@@ -322,6 +321,7 @@ public class SubmoduleInitTest extends RepositoryTestCase {
 		DirCacheEditor editor = cache.editor();
 		editor.add(new PathEdit(path) {
 
+			@Override
 			public void apply(DirCacheEntry ent) {
 				ent.setFileMode(FileMode.GITLINK);
 				ent.setObjectId(id);

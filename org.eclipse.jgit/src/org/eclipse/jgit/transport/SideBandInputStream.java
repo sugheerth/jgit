@@ -48,6 +48,7 @@ import static org.eclipse.jgit.transport.SideBandOutputStream.HDR_SIZE;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.Writer;
 import java.text.MessageFormat;
 import java.util.regex.Matcher;
@@ -77,19 +78,15 @@ import org.eclipse.jgit.util.RawParseUtils;
  * @see SideBandOutputStream
  */
 class SideBandInputStream extends InputStream {
-	private static final String PFX_REMOTE = JGitText.get().prefixRemote;
-
 	static final int CH_DATA = 1;
-
 	static final int CH_PROGRESS = 2;
-
 	static final int CH_ERROR = 3;
 
 	private static Pattern P_UNBOUNDED = Pattern
-			.compile("^([\\w ]+): +(\\d+)(?:, done\\.)? *[\r\n]$");
+			.compile("^([\\w ]+): +(\\d+)(?:, done\\.)? *[\r\n]$"); //$NON-NLS-1$
 
 	private static Pattern P_BOUNDED = Pattern
-			.compile("^([\\w ]+): +\\d+% +\\( *(\\d+)/ *(\\d+)\\)(?:, done\\.)? *[\r\n]$");
+			.compile("^([\\w ]+): +\\d+% +\\( *(\\d+)/ *(\\d+)\\)(?:, done\\.)? *[\r\n]$"); //$NON-NLS-1$
 
 	private final InputStream rawIn;
 
@@ -99,7 +96,9 @@ class SideBandInputStream extends InputStream {
 
 	private final Writer messages;
 
-	private String progressBuffer = "";
+	private final OutputStream out;
+
+	private String progressBuffer = ""; //$NON-NLS-1$
 
 	private String currentTask;
 
@@ -112,12 +111,13 @@ class SideBandInputStream extends InputStream {
 	private int available;
 
 	SideBandInputStream(final InputStream in, final ProgressMonitor progress,
-			final Writer messageStream) {
+			final Writer messageStream, OutputStream outputStream) {
 		rawIn = in;
 		pckIn = new PacketLineIn(rawIn);
 		monitor = progress;
 		messages = messageStream;
-		currentTask = "";
+		currentTask = ""; //$NON-NLS-1$
+		out = outputStream;
 	}
 
 	@Override
@@ -170,7 +170,7 @@ class SideBandInputStream extends InputStream {
 				continue;
 			case CH_ERROR:
 				eof = true;
-				throw new TransportException(PFX_REMOTE + readString(available));
+				throw new TransportException(remote(readString(available)));
 			default:
 				throw new PackProtocolException(
 						MessageFormat.format(JGitText.get().invalidChannel,
@@ -232,10 +232,23 @@ class SideBandInputStream extends InputStream {
 		}
 
 		messages.write(msg);
+		if (out != null)
+			out.write(msg.getBytes());
 	}
 
 	private void beginTask(final int totalWorkUnits) {
-		monitor.beginTask(PFX_REMOTE + currentTask, totalWorkUnits);
+		monitor.beginTask(remote(currentTask), totalWorkUnits);
+	}
+
+	private static String remote(String msg) {
+		String prefix = JGitText.get().prefixRemote;
+		StringBuilder r = new StringBuilder(prefix.length() + msg.length() + 1);
+		r.append(prefix);
+		if (prefix.length() > 0 && prefix.charAt(prefix.length() - 1) != ' ') {
+			r.append(' ');
+		}
+		r.append(msg);
+		return r.toString();
 	}
 
 	private String readString(final int len) throws IOException {

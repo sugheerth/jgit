@@ -43,15 +43,15 @@
 
 package org.eclipse.jgit.http.server;
 
-import static org.eclipse.jgit.http.server.ServletUtils.ATTRIBUTE_HANDLER;
-import static org.eclipse.jgit.transport.BasePackFetchConnection.OPTION_SIDE_BAND;
-import static org.eclipse.jgit.transport.BasePackFetchConnection.OPTION_SIDE_BAND_64K;
-import static org.eclipse.jgit.transport.BasePackPushConnection.CAPABILITY_SIDE_BAND_64K;
-import static org.eclipse.jgit.transport.SideBandOutputStream.CH_ERROR;
-import static org.eclipse.jgit.transport.SideBandOutputStream.SMALL_BUF;
 import static javax.servlet.http.HttpServletResponse.SC_FORBIDDEN;
 import static javax.servlet.http.HttpServletResponse.SC_INTERNAL_SERVER_ERROR;
 import static javax.servlet.http.HttpServletResponse.SC_NOT_FOUND;
+import static org.eclipse.jgit.http.server.ServletUtils.ATTRIBUTE_HANDLER;
+import static org.eclipse.jgit.transport.GitProtocolConstants.CAPABILITY_SIDE_BAND_64K;
+import static org.eclipse.jgit.transport.GitProtocolConstants.OPTION_SIDE_BAND;
+import static org.eclipse.jgit.transport.GitProtocolConstants.OPTION_SIDE_BAND_64K;
+import static org.eclipse.jgit.transport.SideBandOutputStream.CH_ERROR;
+import static org.eclipse.jgit.transport.SideBandOutputStream.SMALL_BUF;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -297,6 +297,7 @@ public class GitSmartHttpTools {
 
 	private static void writeSideBand(OutputStream out, String textForGit)
 			throws IOException {
+		@SuppressWarnings("resource" /* java 7 */)
 		OutputStream msg = new SideBandOutputStream(CH_ERROR, SMALL_BUF, out);
 		msg.write(Constants.encode("error: " + textForGit));
 		msg.flush();

@@ -44,12 +44,17 @@
 
 package org.eclipse.jgit.revwalk;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
+
 import java.io.IOException;
 import java.nio.charset.Charset;
+import java.nio.charset.IllegalCharsetNameException;
+import java.nio.charset.UnsupportedCharsetException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+import org.eclipse.jgit.annotations.Nullable;
 import org.eclipse.jgit.errors.IncorrectObjectTypeException;
 import org.eclipse.jgit.errors.MissingObjectException;
 import org.eclipse.jgit.lib.AnyObjectId;
@@ -59,9 +64,12 @@ import org.eclipse.jgit.lib.ObjectInserter;
 import org.eclipse.jgit.lib.ObjectReader;
 import org.eclipse.jgit.lib.PersonIdent;
 import org.eclipse.jgit.util.RawParseUtils;
+import org.eclipse.jgit.util.StringUtils;
 
 /** A commit reference to a commit in the DAG. */
 public class RevCommit extends RevObject {
+	private static final int STACK_DEPTH = 500;
+
 	/**
 	 * Parse a commit from its canonical format.
 	 *
@@ -80,32 +88,43 @@ public class RevCommit extends RevObject {
 	 *         available to the caller.
 	 */
 	public static RevCommit parse(byte[] raw) {
-		return parse(new RevWalk((ObjectReader) null), raw);
+		try {
+			return parse(new RevWalk((ObjectReader) null), raw);
+		} catch (IOException ex) {
+			throw new RuntimeException(ex);
+		}
 	}
 
 	/**
 	 * Parse a commit from its canonical format.
-	 *
+	 * <p>
 	 * This method inserts the commit directly into the caller supplied revision
 	 * pool, making it appear as though the commit exists in the repository,
-	 * even if it doesn't.  The repository under the pool is not affected.
+	 * even if it doesn't. The repository under the pool is not affected.
+	 * <p>
+	 * The body of the commit (message, author, committer) is always retained in
+	 * the returned {@code RevCommit}, even if the supplied {@code RevWalk} has
+	 * been configured with {@code setRetainBody(false)}.
 	 *
 	 * @param rw
 	 *            the revision pool to allocate the commit within. The commit's
 	 *            tree and parent pointers will be obtained from this pool.
 	 * @param raw
-	 *            the canonical formatted commit to be parsed.
+	 *            the canonical formatted commit to be parsed. This buffer will
+	 *            be retained by the returned {@code RevCommit} and must not be
+	 *            modified by the caller.
 	 * @return the parsed commit, in an isolated revision pool that is not
 	 *         available to the caller.
+	 * @throws IOException
+	 *             in case of RevWalk initialization fails
 	 */
-	public static RevCommit parse(RevWalk rw, byte[] raw) {
-		ObjectInserter.Formatter fmt = new ObjectInserter.Formatter();
-		boolean retain = rw.isRetainBody();
-		rw.setRetainBody(true);
-		RevCommit r = rw.lookupCommit(fmt.idFor(Constants.OBJ_COMMIT, raw));
-		r.parseCanonical(rw, raw);
-		rw.setRetainBody(retain);
-		return r;
+	public static RevCommit parse(RevWalk rw, byte[] raw) throws IOException {
+		try (ObjectInserter.Formatter fmt = new ObjectInserter.Formatter()) {
+			RevCommit r = rw.lookupCommit(fmt.idFor(Constants.OBJ_COMMIT, raw));
+			r.parseCanonical(rw, raw);
+			r.buffer = raw;
+			return r;
+		}
 	}
 
 	static final RevCommit[] NO_PARENTS = {};
@@ -146,7 +165,11 @@ public class RevCommit extends RevObject {
 		}
 	}
 
-	void parseCanonical(final RevWalk walk, final byte[] raw) {
+	void parseCanonical(final RevWalk walk, final byte[] raw)
+			throws IOException {
+		if (!walk.shallowCommitsInitialized)
+			walk.initializeShallowCommits();
+
 		final MutableObjectId idBuffer = walk.idBuffer;
 		idBuffer.fromString(raw, 5);
 		tree = walk.lookupTree(idBuffer);
@@ -202,27 +225,72 @@ public class RevCommit extends RevObject {
 		return Constants.OBJ_COMMIT;
 	}
 
-	static void carryFlags(RevCommit c, final int carry) {
-		for (;;) {
-			final RevCommit[] pList = c.parents;
-			if (pList == null)
-				return;
-			final int n = pList.length;
-			if (n == 0)
-				return;
+	static void carryFlags(RevCommit c, int carry) {
+		FIFORevQueue q = carryFlags1(c, carry, 0);
+		if (q != null)
+			slowCarryFlags(q, carry);
+	}
 
-			for (int i = 1; i < n; i++) {
-				final RevCommit p = pList[i];
-				if ((p.flags & carry) == carry)
-					continue;
-				p.flags |= carry;
-				carryFlags(p, carry);
+	private static FIFORevQueue carryFlags1(RevCommit c, int carry, int depth) {
+		for(;;) {
+			RevCommit[] pList = c.parents;
+			if (pList == null || pList.length == 0)
+				return null;
+			if (pList.length != 1) {
+				if (depth == STACK_DEPTH)
+					return defer(c);
+				for (int i = 1; i < pList.length; i++) {
+					RevCommit p = pList[i];
+					if ((p.flags & carry) == carry)
+						continue;
+					p.flags |= carry;
+					FIFORevQueue q = carryFlags1(p, carry, depth + 1);
+					if (q != null)
+						return defer(q, carry, pList, i + 1);
+				}
 			}
 
 			c = pList[0];
 			if ((c.flags & carry) == carry)
-				return;
+				return null;
 			c.flags |= carry;
+		}
+	}
+
+	private static FIFORevQueue defer(RevCommit c) {
+		FIFORevQueue q = new FIFORevQueue();
+		q.add(c);
+		return q;
+	}
+
+	private static FIFORevQueue defer(FIFORevQueue q, int carry,
+			RevCommit[] pList, int i) {
+		// In normal case the caller will run pList[0] in a tail recursive
+		// fashion by updating the variable. However the caller is unwinding
+		// the stack and will skip that pList[0] execution step.
+		carryOneStep(q, carry, pList[0]);
+
+		// Remaining parents (if any) need to have flags checked and be
+		// enqueued if they have ancestors.
+		for (; i < pList.length; i++)
+			carryOneStep(q, carry, pList[i]);
+		return q;
+	}
+
+	private static void slowCarryFlags(FIFORevQueue q, int carry) {
+		// Commits in q have non-null parent arrays and have set all
+		// flags in carry. This loop finishes copying over the graph.
+		for (RevCommit c; (c = q.next()) != null;) {
+			for (RevCommit p : c.parents)
+				carryOneStep(q, carry, p);
+		}
+	}
+
+	private static void carryOneStep(FIFORevQueue q, int carry, RevCommit c) {
+		if ((c.flags & carry) != carry) {
+			c.flags |= carry;
+			if (c.parents != null)
+				q.add(c);
 		}
 	}
 
@@ -378,12 +446,12 @@ public class RevCommit extends RevObject {
 	 * @return decoded commit message as a string. Never null.
 	 */
 	public final String getFullMessage() {
-		final byte[] raw = buffer;
-		final int msgB = RawParseUtils.commitMessage(raw, 0);
-		if (msgB < 0)
-			return "";
-		final Charset enc = RawParseUtils.parseEncoding(raw);
-		return RawParseUtils.decode(enc, raw, msgB, raw.length);
+		byte[] raw = buffer;
+		int msgB = RawParseUtils.commitMessage(raw, 0);
+		if (msgB < 0) {
+			return ""; //$NON-NLS-1$
+		}
+		return RawParseUtils.decode(guessEncoding(), raw, msgB, raw.length);
 	}
 
 	/**
@@ -402,16 +470,17 @@ public class RevCommit extends RevObject {
 	 *         spanned multiple lines. Embedded LFs are converted to spaces.
 	 */
 	public final String getShortMessage() {
-		final byte[] raw = buffer;
-		final int msgB = RawParseUtils.commitMessage(raw, 0);
-		if (msgB < 0)
-			return "";
+		byte[] raw = buffer;
+		int msgB = RawParseUtils.commitMessage(raw, 0);
+		if (msgB < 0) {
+			return ""; //$NON-NLS-1$
+		}
 
-		final Charset enc = RawParseUtils.parseEncoding(raw);
-		final int msgE = RawParseUtils.endOfParagraph(raw, msgB);
-		String str = RawParseUtils.decode(enc, raw, msgB, msgE);
-		if (hasLF(raw, msgB, msgE))
-			str = str.replace('\n', ' ');
+		int msgE = RawParseUtils.endOfParagraph(raw, msgB);
+		String str = RawParseUtils.decode(guessEncoding(), raw, msgB, msgE);
+		if (hasLF(raw, msgB, msgE)) {
+			str = StringUtils.replaceLineBreaksWithSpace(str);
+		}
 		return str;
 	}
 
@@ -425,16 +494,47 @@ public class RevCommit extends RevObject {
 	/**
 	 * Determine the encoding of the commit message buffer.
 	 * <p>
+	 * Locates the "encoding" header (if present) and returns its value. Due to
+	 * corruption in the wild this may be an invalid encoding name that is not
+	 * recognized by any character encoding library.
+	 * <p>
+	 * If no encoding header is present, null.
+	 *
+	 * @return the preferred encoding of {@link #getRawBuffer()}; or null.
+	 * @since 4.2
+	 */
+	@Nullable
+	public final String getEncodingName() {
+		return RawParseUtils.parseEncodingName(buffer);
+	}
+
+	/**
+	 * Determine the encoding of the commit message buffer.
+	 * <p>
 	 * Locates the "encoding" header (if present) and then returns the proper
 	 * character set to apply to this buffer to evaluate its contents as
 	 * character data.
 	 * <p>
-	 * If no encoding header is present, {@link Constants#CHARSET} is assumed.
+	 * If no encoding header is present {@code UTF-8} is assumed.
 	 *
 	 * @return the preferred encoding of {@link #getRawBuffer()}.
+	 * @throws IllegalCharsetNameException
+	 *             if the character set requested by the encoding header is
+	 *             malformed and unsupportable.
+	 * @throws UnsupportedCharsetException
+	 *             if the JRE does not support the character set requested by
+	 *             the encoding header.
 	 */
 	public final Charset getEncoding() {
 		return RawParseUtils.parseEncoding(buffer);
+	}
+
+	private Charset guessEncoding() {
+		try {
+			return getEncoding();
+		} catch (IllegalCharsetNameException | UnsupportedCharsetException e) {
+			return UTF_8;
+		}
 	}
 
 	/**
@@ -465,8 +565,8 @@ public class RevCommit extends RevObject {
 			ptr--;
 
 		final int msgB = RawParseUtils.commitMessage(raw, 0);
-		final ArrayList<FooterLine> r = new ArrayList<FooterLine>(4);
-		final Charset enc = getEncoding();
+		final ArrayList<FooterLine> r = new ArrayList<>(4);
+		final Charset enc = guessEncoding();
 		for (;;) {
 			ptr = RawParseUtils.prevLF(raw, ptr);
 			if (ptr <= msgB)
@@ -528,7 +628,7 @@ public class RevCommit extends RevObject {
 		final List<FooterLine> src = getFooterLines();
 		if (src.isEmpty())
 			return Collections.emptyList();
-		final ArrayList<String> r = new ArrayList<String>(src.size());
+		final ArrayList<String> r = new ArrayList<>(src.size());
 		for (final FooterLine f : src) {
 			if (f.matches(keyName))
 				r.add(f.getValue());
@@ -546,7 +646,19 @@ public class RevCommit extends RevObject {
 		inDegree = 0;
 	}
 
-	final void disposeBody() {
+	/**
+	 * Discard the message buffer to reduce memory usage.
+	 * <p>
+	 * After discarding the memory usage of the {@code RevCommit} is reduced to
+	 * only the {@link #getTree()} and {@link #getParents()} pointers and the
+	 * time in {@link #getCommitTime()}. Accessing other properties such as
+	 * {@link #getAuthorIdent()}, {@link #getCommitterIdent()} or either message
+	 * function requires reloading the buffer by invoking
+	 * {@link RevWalk#parseBody(RevObject)}.
+	 *
+	 * @since 4.0
+	 */
+	public final void disposeBody() {
 		buffer = null;
 	}
 

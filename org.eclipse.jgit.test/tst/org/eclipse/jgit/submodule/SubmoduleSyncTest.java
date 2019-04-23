@@ -58,12 +58,12 @@ import org.eclipse.jgit.dircache.DirCache;
 import org.eclipse.jgit.dircache.DirCacheEditor;
 import org.eclipse.jgit.dircache.DirCacheEditor.PathEdit;
 import org.eclipse.jgit.dircache.DirCacheEntry;
+import org.eclipse.jgit.junit.RepositoryTestCase;
 import org.eclipse.jgit.lib.ConfigConstants;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.FileMode;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Repository;
-import org.eclipse.jgit.lib.RepositoryTestCase;
 import org.eclipse.jgit.lib.StoredConfig;
 import org.eclipse.jgit.storage.file.FileBasedConfig;
 import org.junit.Test;
@@ -95,6 +95,7 @@ public class SubmoduleSyncTest extends RepositoryTestCase {
 		DirCacheEditor editor = cache.editor();
 		editor.add(new PathEdit(path) {
 
+			@Override
 			public void apply(DirCacheEntry ent) {
 				ent.setFileMode(FileMode.GITLINK);
 				ent.setObjectId(id);
@@ -135,8 +136,8 @@ public class SubmoduleSyncTest extends RepositoryTestCase {
 		assertTrue(generator.next());
 		assertEquals(url, generator.getConfigUrl());
 		Repository subModRepository = generator.getRepository();
-		addRepoToClose(subModRepository);
 		StoredConfig submoduleConfig = subModRepository.getConfig();
+		subModRepository.close();
 		assertEquals(url, submoduleConfig.getString(
 				ConfigConstants.CONFIG_REMOTE_SECTION,
 				Constants.DEFAULT_REMOTE_NAME, ConfigConstants.CONFIG_KEY_URL));
@@ -156,6 +157,7 @@ public class SubmoduleSyncTest extends RepositoryTestCase {
 		DirCacheEditor editor = cache.editor();
 		editor.add(new PathEdit(path) {
 
+			@Override
 			public void apply(DirCacheEntry ent) {
 				ent.setFileMode(FileMode.GITLINK);
 				ent.setObjectId(id);
@@ -207,8 +209,8 @@ public class SubmoduleSyncTest extends RepositoryTestCase {
 		assertTrue(generator.next());
 		assertEquals("git://server/sub.git", generator.getConfigUrl());
 		Repository subModRepository1 = generator.getRepository();
-		addRepoToClose(subModRepository1);
 		StoredConfig submoduleConfig = subModRepository1.getConfig();
+		subModRepository1.close();
 		assertEquals("git://server/sub.git", submoduleConfig.getString(
 				ConfigConstants.CONFIG_REMOTE_SECTION,
 				Constants.DEFAULT_REMOTE_NAME, ConfigConstants.CONFIG_KEY_URL));

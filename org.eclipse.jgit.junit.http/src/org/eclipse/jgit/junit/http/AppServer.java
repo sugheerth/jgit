@@ -60,10 +60,12 @@ import org.eclipse.jetty.security.ConstraintSecurityHandler;
 import org.eclipse.jetty.security.MappedLoginService;
 import org.eclipse.jetty.security.authentication.BasicAuthenticator;
 import org.eclipse.jetty.server.Connector;
+import org.eclipse.jetty.server.HttpConfiguration;
+import org.eclipse.jetty.server.HttpConnectionFactory;
 import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.server.UserIdentity;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
-import org.eclipse.jetty.server.nio.SelectChannelConnector;
 import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.util.security.Constraint;
 import org.eclipse.jetty.util.security.Password;
@@ -95,15 +97,32 @@ public class AppServer {
 
 	private final Server server;
 
-	private final Connector connector;
+	private final ServerConnector connector;
 
 	private final ContextHandlerCollection contexts;
 
 	private final TestRequestLog log;
 
 	public AppServer() {
-		connector = new SelectChannelConnector();
-		connector.setPort(0);
+		this(0);
+	}
+
+	/**
+	 * @param port
+	 *            the http port number
+	 * @since 4.2
+	 */
+	public AppServer(int port) {
+		server = new Server();
+
+		HttpConfiguration http_config = new HttpConfiguration();
+		http_config.setSecureScheme("https");
+		http_config.setSecurePort(8443);
+		http_config.setOutputBufferSize(32768);
+
+		connector = new ServerConnector(server,
+				new HttpConnectionFactory(http_config));
+		connector.setPort(port);
 		try {
 			final InetAddress me = InetAddress.getByName("localhost");
 			connector.setHost(me.getHostAddress());
@@ -116,7 +135,6 @@ public class AppServer {
 		log = new TestRequestLog();
 		log.setHandler(contexts);
 
-		server = new Server();
 		server.setConnectors(new Connector[] { connector });
 		server.setHandler(log);
 	}
@@ -150,21 +168,36 @@ public class AppServer {
 		return ctx;
 	}
 
+	static class TestMappedLoginService extends MappedLoginService {
+		private String role;
+
+		TestMappedLoginService(String role) {
+			this.role = role;
+		}
+
+		@Override
+		protected UserIdentity loadUser(String who) {
+			return null;
+		}
+
+		@Override
+		protected void loadUsers() throws IOException {
+			putUser(username, new Password(password), new String[] { role });
+		}
+
+		protected String[] loadRoleInfo(KnownUser user) {
+			return null;
+		}
+
+		protected KnownUser loadUserInfo(String usrname) {
+			return null;
+		}
+	}
+
 	private void auth(ServletContextHandler ctx, Authenticator authType) {
 		final String role = "can-access";
 
-		MappedLoginService users = new MappedLoginService() {
-			@Override
-			protected UserIdentity loadUser(String who) {
-				return null;
-			}
-
-			@Override
-			protected void loadUsers() throws IOException {
-				putUser(username, new Password(password), new String[] { role });
-			}
-		};
-
+		MappedLoginService users = new TestMappedLoginService(role);
 		ConstraintMapping cm = new ConstraintMapping();
 		cm.setConstraint(new Constraint());
 		cm.getConstraint().setAuthenticate(true);
@@ -173,7 +206,6 @@ public class AppServer {
 		cm.setPathSpec("/*");
 
 		ConstraintSecurityHandler sec = new ConstraintSecurityHandler();
-		sec.setStrict(false);
 		sec.setRealmName(realm);
 		sec.setAuthenticator(authType);
 		sec.setLoginService(users);
@@ -232,12 +264,12 @@ public class AppServer {
 	/** @return the local port number the server is listening on. */
 	public int getPort() {
 		assertAlreadySetUp();
-		return ((SelectChannelConnector) connector).getLocalPort();
+		return connector.getLocalPort();
 	}
 
 	/** @return all requests since the server was started. */
 	public List<AccessEvent> getRequests() {
-		return new ArrayList<AccessEvent>(log.getEvents());
+		return new ArrayList<>(log.getEvents());
 	}
 
 	/**
@@ -257,7 +289,7 @@ public class AppServer {
 	 * @return all requests which match the given path.
 	 */
 	public List<AccessEvent> getRequests(String path) {
-		ArrayList<AccessEvent> r = new ArrayList<AccessEvent>();
+		ArrayList<AccessEvent> r = new ArrayList<>();
 		for (AccessEvent event : log.getEvents()) {
 			if (event.getPath().equals(path)) {
 				r.add(event);

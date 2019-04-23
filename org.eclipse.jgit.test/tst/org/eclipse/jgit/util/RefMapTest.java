@@ -480,8 +480,8 @@ public class RefMapTest {
 		assertEquals(1, map.size());
 	}
 
-	private RefList<Ref> toList(Ref... refs) {
-		RefList.Builder<Ref> b = new RefList.Builder<Ref>(refs.length);
+	private static RefList<Ref> toList(Ref... refs) {
+		RefList.Builder<Ref> b = new RefList.Builder<>(refs.length);
 		b.addAll(refs, 0, refs.length);
 		return b.toRefList();
 	}

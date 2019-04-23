@@ -46,6 +46,8 @@
 
 package org.eclipse.jgit.pgm;
 
+import static java.lang.Integer.valueOf;
+import static java.lang.Long.valueOf;
 import static org.eclipse.jgit.lib.Constants.OBJECT_ID_STRING_LENGTH;
 
 import java.io.File;
@@ -66,6 +68,7 @@ import org.eclipse.jgit.dircache.DirCache;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectReader;
 import org.eclipse.jgit.lib.PersonIdent;
+import org.eclipse.jgit.pgm.internal.CLIText;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevFlag;
 import org.kohsuke.args4j.Argument;
@@ -111,7 +114,7 @@ class Blame extends TextBuiltin {
 	private String rangeString;
 
 	@Option(name = "--reverse", metaVar = "metaVar_blameReverse", usage = "usage_blameReverse")
-	private List<RevCommit> reverseRange = new ArrayList<RevCommit>(2);
+	private List<RevCommit> reverseRange = new ArrayList<>(2);
 
 	@Argument(index = 0, required = false, metaVar = "metaVar_revision")
 	private String revision;
@@ -121,7 +124,7 @@ class Blame extends TextBuiltin {
 
 	private ObjectReader reader;
 
-	private final Map<RevCommit, String> abbreviatedCommits = new HashMap<RevCommit, String>();
+	private final Map<RevCommit, String> abbreviatedCommits = new HashMap<>();
 
 	private SimpleDateFormat dateFmt;
 
@@ -140,26 +143,27 @@ class Blame extends TextBuiltin {
 			revision = null;
 		}
 
+		boolean autoAbbrev = abbrev == 0;
 		if (abbrev == 0)
-			abbrev = db.getConfig().getInt("core", "abbrev", 7);
+			abbrev = db.getConfig().getInt("core", "abbrev", 7); //$NON-NLS-1$ //$NON-NLS-2$
 		if (!showBlankBoundary)
-			root = db.getConfig().getBoolean("blame", "blankboundary", false);
+			root = db.getConfig().getBoolean("blame", "blankboundary", false); //$NON-NLS-1$ //$NON-NLS-2$
 		if (!root)
-			root = db.getConfig().getBoolean("blame", "showroot", false);
+			root = db.getConfig().getBoolean("blame", "showroot", false); //$NON-NLS-1$ //$NON-NLS-2$
 
 		if (showRawTimestamp)
-			dateFmt = new SimpleDateFormat("ZZZZ");
+			dateFmt = new SimpleDateFormat("ZZZZ"); //$NON-NLS-1$
 		else
-			dateFmt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss ZZZZ");
+			dateFmt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss ZZZZ"); //$NON-NLS-1$
 
-		BlameGenerator generator = new BlameGenerator(db, file);
 		reader = db.newObjectReader();
-		try {
+		try (BlameGenerator generator = new BlameGenerator(db, file)) {
+			RevFlag scanned = generator.newFlag("SCANNED"); //$NON-NLS-1$
 			generator.setTextComparator(comparator);
 
 			if (!reverseRange.isEmpty()) {
 				RevCommit rangeStart = null;
-				List<RevCommit> rangeEnd = new ArrayList<RevCommit>(2);
+				List<RevCommit> rangeEnd = new ArrayList<>(2);
 				for (RevCommit c : reverseRange) {
 					if (c.has(RevFlag.UNINTERESTING))
 						rangeStart = c;
@@ -168,7 +172,7 @@ class Blame extends TextBuiltin {
 				}
 				generator.reverse(rangeStart, rangeEnd);
 			} else if (revision != null) {
-				generator.push(null, db.resolve(revision + "^{commit}"));
+				generator.push(null, db.resolve(revision + "^{commit}")); //$NON-NLS-1$
 			} else {
 				generator.push(null, db.resolve(Constants.HEAD));
 				if (!db.isBare()) {
@@ -178,7 +182,7 @@ class Blame extends TextBuiltin {
 						generator.push(null, dc.getEntry(entry).getObjectId());
 
 					File inTree = new File(db.getWorkTree(), file);
-					if (inTree.isFile())
+					if (db.getFS().isFile(inTree))
 						generator.push(null, new RawText(inTree));
 				}
 			}
@@ -195,43 +199,65 @@ class Blame extends TextBuiltin {
 			int pathWidth = 1;
 			int maxSourceLine = 1;
 			for (int line = begin; line < end; line++) {
-				authorWidth = Math.max(authorWidth, author(line).length());
-				dateWidth = Math.max(dateWidth, date(line).length());
-				pathWidth = Math.max(pathWidth, path(line).length());
+				RevCommit c = blame.getSourceCommit(line);
+				if (c != null && !c.has(scanned)) {
+					c.add(scanned);
+					if (autoAbbrev)
+						abbrev = Math.max(abbrev, uniqueAbbrevLen(c));
+					authorWidth = Math.max(authorWidth, author(line).length());
+					dateWidth = Math.max(dateWidth, date(line).length());
+					pathWidth = Math.max(pathWidth, path(line).length());
+				}
+				while (line + 1 < end && blame.getSourceCommit(line + 1) == c)
+					line++;
 				maxSourceLine = Math.max(maxSourceLine, blame.getSourceLine(line));
 			}
 
-			String pathFmt = MessageFormat.format(" %{0}s", pathWidth);
-			String numFmt = MessageFormat.format(" %{0}d",
-					1 + (int) Math.log10(maxSourceLine + 1));
-			String lineFmt = MessageFormat.format(" %{0}d) ",
-					1 + (int) Math.log10(end + 1));
-			String authorFmt = MessageFormat.format(" (%-{0}s %{1}s",
-					authorWidth, dateWidth);
+			String pathFmt = MessageFormat.format(" %{0}s", valueOf(pathWidth)); //$NON-NLS-1$
+			String numFmt = MessageFormat.format(" %{0}d", //$NON-NLS-1$
+					valueOf(1 + (int) Math.log10(maxSourceLine + 1)));
+			String lineFmt = MessageFormat.format(" %{0}d) ", //$NON-NLS-1$
+					valueOf(1 + (int) Math.log10(end + 1)));
+			String authorFmt = MessageFormat.format(" (%-{0}s %{1}s", //$NON-NLS-1$
+					valueOf(authorWidth), valueOf(dateWidth));
 
-			for (int line = begin; line < end; line++) {
-				out.print(abbreviate(blame.getSourceCommit(line)));
-				if (showSourcePath)
-					out.format(pathFmt, path(line));
-				if (showSourceLine)
-					out.format(numFmt, blame.getSourceLine(line) + 1);
-				if (!noAuthor)
-					out.format(authorFmt, author(line), date(line));
-				out.format(lineFmt, line + 1);
-				out.flush();
-				blame.getResultContents().writeLine(System.out, line);
-				out.print('\n');
+			for (int line = begin; line < end;) {
+				RevCommit c = blame.getSourceCommit(line);
+				String commit = abbreviate(c);
+				String author = null;
+				String date = null;
+				if (!noAuthor) {
+					author = author(line);
+					date = date(line);
+				}
+				do {
+					outw.print(commit);
+					if (showSourcePath)
+						outw.format(pathFmt, path(line));
+					if (showSourceLine)
+						outw.format(numFmt, valueOf(blame.getSourceLine(line) + 1));
+					if (!noAuthor)
+						outw.format(authorFmt, author, date);
+					outw.format(lineFmt, valueOf(line + 1));
+					outw.flush();
+					blame.getResultContents().writeLine(outs, line);
+					outs.flush();
+					outw.print('\n');
+				} while (++line < end && blame.getSourceCommit(line) == c);
 			}
 		} finally {
-			generator.release();
-			reader.release();
+			reader.close();
 		}
+	}
+
+	private int uniqueAbbrevLen(RevCommit commit) throws IOException {
+		return reader.abbreviate(commit, abbrev).length();
 	}
 
 	private void parseLineRangeOption() {
 		String beginStr, endStr;
-		if (rangeString.startsWith("/")) {
-			int c = rangeString.indexOf("/,", 1);
+		if (rangeString.startsWith("/")) { //$NON-NLS-1$
+			int c = rangeString.indexOf("/,", 1); //$NON-NLS-1$
 			if (c < 0) {
 				beginStr = rangeString;
 				endStr = String.valueOf(end);
@@ -246,7 +272,7 @@ class Blame extends TextBuiltin {
 				beginStr = rangeString;
 				endStr = String.valueOf(end);
 			} else if (c == 0) {
-				beginStr = "0";
+				beginStr = "0"; //$NON-NLS-1$
 				endStr = rangeString.substring(1);
 			} else {
 				beginStr = rangeString.substring(0, c);
@@ -254,20 +280,20 @@ class Blame extends TextBuiltin {
 			}
 		}
 
-		if (beginStr.equals(""))
+		if (beginStr.equals("")) //$NON-NLS-1$
 			begin = 0;
-		else if (beginStr.startsWith("/"))
+		else if (beginStr.startsWith("/")) //$NON-NLS-1$
 			begin = findLine(0, beginStr);
 		else
 			begin = Math.max(0, Integer.parseInt(beginStr) - 1);
 
-		if (endStr.equals(""))
+		if (endStr.equals("")) //$NON-NLS-1$
 			end = blame.getResultContents().size();
-		else if (endStr.startsWith("/"))
+		else if (endStr.startsWith("/")) //$NON-NLS-1$
 			end = findLine(begin, endStr);
-		else if (endStr.startsWith("-"))
+		else if (endStr.startsWith("-")) //$NON-NLS-1$
 			end = begin + Integer.parseInt(endStr);
-		else if (endStr.startsWith("+"))
+		else if (endStr.startsWith("+")) //$NON-NLS-1$
 			end = begin + Integer.parseInt(endStr.substring(1));
 		else
 			end = Math.max(0, Integer.parseInt(endStr) - 1);
@@ -275,10 +301,10 @@ class Blame extends TextBuiltin {
 
 	private int findLine(int b, String regex) {
 		String re = regex.substring(1, regex.length() - 1);
-		if (!re.startsWith("^"))
-			re = ".*" + re;
-		if (!re.endsWith("$"))
-			re = re + ".*";
+		if (!re.startsWith("^")) //$NON-NLS-1$
+			re = ".*" + re; //$NON-NLS-1$
+		if (!re.endsWith("$")) //$NON-NLS-1$
+			re = re + ".*"; //$NON-NLS-1$
 		Pattern p = Pattern.compile(re);
 		RawText text = blame.getResultContents();
 		for (int line = b; line < text.size(); line++) {
@@ -290,30 +316,31 @@ class Blame extends TextBuiltin {
 
 	private String path(int line) {
 		String p = blame.getSourcePath(line);
-		return p != null ? p : "";
+		return p != null ? p : ""; //$NON-NLS-1$
 	}
 
 	private String author(int line) {
 		PersonIdent author = blame.getSourceAuthor(line);
 		if (author == null)
-			return "";
+			return ""; //$NON-NLS-1$
 		String name = showAuthorEmail ? author.getEmailAddress() : author
 				.getName();
-		return name != null ? name : "";
+		return name != null ? name : ""; //$NON-NLS-1$
 	}
 
 	private String date(int line) {
 		if (blame.getSourceCommit(line) == null)
-			return "";
+			return ""; //$NON-NLS-1$
 
 		PersonIdent author = blame.getSourceAuthor(line);
 		if (author == null)
-			return "";
+			return ""; //$NON-NLS-1$
 
 		dateFmt.setTimeZone(author.getTimeZone());
 		if (!showRawTimestamp)
 			return dateFmt.format(author.getWhen());
-		return String.format("%d %s", author.getWhen().getTime() / 1000L,
+		return String.format("%d %s", //$NON-NLS-1$
+				valueOf(author.getWhen().getTime() / 1000L),
 				dateFmt.format(author.getWhen()));
 	}
 
@@ -334,9 +361,9 @@ class Blame extends TextBuiltin {
 
 		} else if (!root && commit.getParentCount() == 0) {
 			if (showLongRevision)
-				r = "^" + commit.name().substring(0, OBJECT_ID_STRING_LENGTH - 1);
+				r = "^" + commit.name().substring(0, OBJECT_ID_STRING_LENGTH - 1); //$NON-NLS-1$
 			else
-				r = "^" + reader.abbreviate(commit, abbrev).name();
+				r = "^" + reader.abbreviate(commit, abbrev).name(); //$NON-NLS-1$
 		} else {
 			if (showLongRevision)
 				r = commit.name();

@@ -47,11 +47,11 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 
+import org.eclipse.jgit.junit.RepositoryTestCase;
 import org.eclipse.jgit.junit.TestRepository;
 import org.eclipse.jgit.lib.ObjectInserter;
 import org.eclipse.jgit.lib.ObjectReader;
 import org.eclipse.jgit.lib.Repository;
-import org.eclipse.jgit.lib.RepositoryTestCase;
 import org.eclipse.jgit.revwalk.RevBlob;
 import org.junit.After;
 import org.junit.Before;
@@ -75,7 +75,7 @@ public class DefaultNoteMergerTest extends RepositoryTestCase {
 	@Before
 	public void setUp() throws Exception {
 		super.setUp();
-		tr = new TestRepository<Repository>(db);
+		tr = new TestRepository<>(db);
 		reader = db.newObjectReader();
 		inserter = db.newObjectInserter();
 		merger = new DefaultNoteMerger();
@@ -86,8 +86,8 @@ public class DefaultNoteMergerTest extends RepositoryTestCase {
 	@Override
 	@After
 	public void tearDown() throws Exception {
-		reader.release();
-		inserter.release();
+		reader.close();
+		inserter.close();
 		super.tearDown();
 	}
 

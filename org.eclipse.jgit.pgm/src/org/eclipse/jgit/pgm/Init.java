@@ -4,6 +4,7 @@
  * Copyright (C) 2010, Robin Rosenberg <robin.rosenberg@dewire.com>
  * Copyright (C) 2010, Sasa Zivkov <sasa.zivkov@sap.com>
  * Copyright (C) 2010, Chris Aniszczyk <caniszczyk@gmail.com>
+ * Copyright (C) 2016, Rüdiger Herrmann <ruediger.herrmann@gmx.de>
  * and other copyright owners as documented in the project's IP log.
  *
  * This program and the accompanying materials are made available
@@ -53,12 +54,17 @@ import java.text.MessageFormat;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.InitCommand;
 import org.eclipse.jgit.lib.Repository;
+import org.eclipse.jgit.pgm.internal.CLIText;
+import org.kohsuke.args4j.Argument;
 import org.kohsuke.args4j.Option;
 
 @Command(common = true, usage = "usage_CreateAnEmptyGitRepository")
 class Init extends TextBuiltin {
 	@Option(name = "--bare", usage = "usage_CreateABareRepository")
 	private boolean bare;
+
+	@Argument(index = 0, metaVar = "metaVar_directory")
+	private String directory;
 
 	@Override
 	protected final boolean requiresRepository() {
@@ -69,10 +75,14 @@ class Init extends TextBuiltin {
 	protected void run() throws Exception {
 		InitCommand command = Git.init();
 		command.setBare(bare);
-		if (gitdir != null)
+		if (gitdir != null) {
 			command.setDirectory(new File(gitdir));
+		}
+		if (directory != null) {
+			command.setDirectory(new File(directory));
+		}
 		Repository repository = command.call().getRepository();
-		out.println(MessageFormat.format(
+		outw.println(MessageFormat.format(
 				CLIText.get().initializedEmptyGitRepositoryIn, repository
 						.getDirectory().getAbsolutePath()));
 	}

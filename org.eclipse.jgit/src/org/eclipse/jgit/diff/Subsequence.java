@@ -45,7 +45,7 @@ package org.eclipse.jgit.diff;
 
 /**
  * Wraps a {@link Sequence} to have a narrower range of elements.
- *
+ * <p>
  * This sequence acts as a proxy for the real sequence, translating element
  * indexes on the fly by adding {@code begin} to them. Sequences of this type
  * must be used with a {@link SubsequenceComparator}.
@@ -56,7 +56,7 @@ package org.eclipse.jgit.diff;
 public final class Subsequence<S extends Sequence> extends Sequence {
 	/**
 	 * Construct a subsequence around the A region/base sequence.
-	 * 
+	 *
 	 * @param <S>
 	 *            the base sequence type.
 	 * @param a
@@ -66,12 +66,12 @@ public final class Subsequence<S extends Sequence> extends Sequence {
 	 * @return subsequence of {@code base} as described by A in {@code region}.
 	 */
 	public static <S extends Sequence> Subsequence<S> a(S a, Edit region) {
-		return new Subsequence<S>(a, region.beginA, region.endA);
+		return new Subsequence<>(a, region.beginA, region.endA);
 	}
 
 	/**
 	 * Construct a subsequence around the B region/base sequence.
-	 * 
+	 *
 	 * @param <S>
 	 *            the base sequence type.
 	 * @param b
@@ -81,12 +81,12 @@ public final class Subsequence<S extends Sequence> extends Sequence {
 	 * @return subsequence of {@code base} as described by B in {@code region}.
 	 */
 	public static <S extends Sequence> Subsequence<S> b(S b, Edit region) {
-		return new Subsequence<S>(b, region.beginB, region.endB);
+		return new Subsequence<>(b, region.beginB, region.endB);
 	}
 
 	/**
 	 * Adjust the Edit to reflect positions in the base sequence.
-	 * 
+	 *
 	 * @param <S>
 	 *            the base sequence type.
 	 * @param e

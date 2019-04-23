@@ -42,7 +42,6 @@
  */
 package org.eclipse.jgit.api;
 
-import java.io.File;
 import java.io.IOException;
 import java.text.MessageFormat;
 
@@ -50,76 +49,55 @@ import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.api.errors.InvalidRefNameException;
 import org.eclipse.jgit.api.errors.JGitInternalException;
 import org.eclipse.jgit.api.errors.NoHeadException;
+import org.eclipse.jgit.api.errors.StashApplyFailureException;
 import org.eclipse.jgit.api.errors.WrongRepositoryStateException;
 import org.eclipse.jgit.dircache.DirCache;
+import org.eclipse.jgit.dircache.DirCacheBuilder;
 import org.eclipse.jgit.dircache.DirCacheCheckout;
-import org.eclipse.jgit.dircache.DirCacheEditor;
-import org.eclipse.jgit.dircache.DirCacheEditor.DeletePath;
-import org.eclipse.jgit.dircache.DirCacheEditor.PathEdit;
+import org.eclipse.jgit.dircache.DirCacheCheckout.CheckoutMetadata;
 import org.eclipse.jgit.dircache.DirCacheEntry;
 import org.eclipse.jgit.dircache.DirCacheIterator;
 import org.eclipse.jgit.errors.CheckoutConflictException;
 import org.eclipse.jgit.internal.JGitText;
 import org.eclipse.jgit.lib.Constants;
+import org.eclipse.jgit.lib.CoreConfig.EolStreamType;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.ObjectReader;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.lib.RepositoryState;
+import org.eclipse.jgit.merge.MergeStrategy;
+import org.eclipse.jgit.merge.ResolveMerger;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevTree;
 import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.treewalk.AbstractTreeIterator;
-import org.eclipse.jgit.treewalk.CanonicalTreeParser;
 import org.eclipse.jgit.treewalk.FileTreeIterator;
 import org.eclipse.jgit.treewalk.TreeWalk;
-import org.eclipse.jgit.treewalk.filter.TreeFilter;
-import org.eclipse.jgit.util.FileUtils;
 
 /**
  * Command class to apply a stashed commit.
  *
+ * This class behaves like <em>git stash apply --index</em>, i.e. it tries to
+ * recover the stashed index state in addition to the working tree state.
+ *
  * @see <a href="http://www.kernel.org/pub/software/scm/git/docs/git-stash.html"
  *      >Git documentation about Stash</a>
+ *
  * @since 2.0
  */
 public class StashApplyCommand extends GitCommand<ObjectId> {
 
-	private static final String DEFAULT_REF = Constants.STASH + "@{0}";
-
-	/**
-	 * Stash diff filter that looks for differences in the first three trees
-	 * which must be the stash head tree, stash index tree, and stash working
-	 * directory tree in any order.
-	 */
-	private static class StashDiffFilter extends TreeFilter {
-
-		@Override
-		public boolean include(final TreeWalk walker) {
-			final int m = walker.getRawMode(0);
-			if (walker.getRawMode(1) != m || !walker.idEqual(1, 0))
-				return true;
-			if (walker.getRawMode(2) != m || !walker.idEqual(2, 0))
-				return true;
-			return false;
-		}
-
-		@Override
-		public boolean shouldBeRecursive() {
-			return false;
-		}
-
-		@Override
-		public TreeFilter clone() {
-			return this;
-		}
-
-		@Override
-		public String toString() {
-			return "STASH_DIFF";
-		}
-	}
+	private static final String DEFAULT_REF = Constants.STASH + "@{0}"; //$NON-NLS-1$
 
 	private String stashRef;
+
+	private boolean applyIndex = true;
+
+	private boolean applyUntracked = true;
+
+	private boolean ignoreRepositoryState;
+
+	private MergeStrategy strategy = MergeStrategy.RECURSIVE;
 
 	/**
 	 * Create command to apply the changes of a stashed commit
@@ -144,61 +122,14 @@ public class StashApplyCommand extends GitCommand<ObjectId> {
 		return this;
 	}
 
-	private boolean isEqualEntry(AbstractTreeIterator iter1,
-			AbstractTreeIterator iter2) {
-		if (!iter1.getEntryFileMode().equals(iter2.getEntryFileMode()))
-			return false;
-		ObjectId id1 = iter1.getEntryObjectId();
-		ObjectId id2 = iter2.getEntryObjectId();
-		return id1 != null ? id1.equals(id2) : id2 == null;
-	}
-
 	/**
-	 * Would unstashing overwrite local changes?
-	 *
-	 * @param stashIndexIter
-	 * @param stashWorkingTreeIter
-	 * @param headIter
-	 * @param indexIter
-	 * @param workingTreeIter
-	 * @return true if unstash conflict, false otherwise
+	 * @param willIgnoreRepositoryState
+	 * @return {@code this}
+	 * @since 3.2
 	 */
-	private boolean isConflict(AbstractTreeIterator stashIndexIter,
-			AbstractTreeIterator stashWorkingTreeIter,
-			AbstractTreeIterator headIter, AbstractTreeIterator indexIter,
-			AbstractTreeIterator workingTreeIter) {
-		// Is the current index dirty?
-		boolean indexDirty = indexIter != null
-				&& (headIter == null || !isEqualEntry(indexIter, headIter));
-
-		// Is the current working tree dirty?
-		boolean workingTreeDirty = workingTreeIter != null
-				&& (headIter == null || !isEqualEntry(workingTreeIter, headIter));
-
-		// Would unstashing overwrite existing index changes?
-		if (indexDirty && stashIndexIter != null && indexIter != null
-				&& !isEqualEntry(stashIndexIter, indexIter))
-			return true;
-
-		// Would unstashing overwrite existing working tree changes?
-		if (workingTreeDirty && stashWorkingTreeIter != null
-				&& workingTreeIter != null
-				&& !isEqualEntry(stashWorkingTreeIter, workingTreeIter))
-			return true;
-
-		return false;
-	}
-
-	private ObjectId getHeadTree() throws GitAPIException {
-		final ObjectId headTree;
-		try {
-			headTree = repo.resolve(Constants.HEAD + "^{tree}");
-		} catch (IOException e) {
-			throw new JGitInternalException(JGitText.get().cannotReadTree, e);
-		}
-		if (headTree == null)
-			throw new NoHeadException(JGitText.get().cannotReadTree);
-		return headTree;
+	public StashApplyCommand ignoreRepositoryState(boolean willIgnoreRepositoryState) {
+		this.ignoreRepositoryState = willIgnoreRepositoryState;
+		return this;
 	}
 
 	private ObjectId getStashId() throws GitAPIException {
@@ -216,165 +147,233 @@ public class StashApplyCommand extends GitCommand<ObjectId> {
 		return stashId;
 	}
 
-	private void scanForConflicts(TreeWalk treeWalk) throws IOException {
-		File workingTree = repo.getWorkTree();
-		while (treeWalk.next()) {
-			// State of the stashed index and working directory
-			AbstractTreeIterator stashIndexIter = treeWalk.getTree(1,
-					AbstractTreeIterator.class);
-			AbstractTreeIterator stashWorkingIter = treeWalk.getTree(2,
-					AbstractTreeIterator.class);
-
-			// State of the current HEAD, index, and working directory
-			AbstractTreeIterator headIter = treeWalk.getTree(3,
-					AbstractTreeIterator.class);
-			AbstractTreeIterator indexIter = treeWalk.getTree(4,
-					AbstractTreeIterator.class);
-			AbstractTreeIterator workingIter = treeWalk.getTree(5,
-					AbstractTreeIterator.class);
-
-			if (isConflict(stashIndexIter, stashWorkingIter, headIter,
-					indexIter, workingIter)) {
-				String path = treeWalk.getPathString();
-				File file = new File(workingTree, path);
-				throw new CheckoutConflictException(file.getAbsolutePath());
-			}
-		}
-	}
-
-	private void applyChanges(TreeWalk treeWalk, DirCache cache,
-			DirCacheEditor editor) throws IOException {
-		File workingTree = repo.getWorkTree();
-		while (treeWalk.next()) {
-			String path = treeWalk.getPathString();
-			File file = new File(workingTree, path);
-
-			// State of the stashed HEAD, index, and working directory
-			AbstractTreeIterator stashHeadIter = treeWalk.getTree(0,
-					AbstractTreeIterator.class);
-			AbstractTreeIterator stashIndexIter = treeWalk.getTree(1,
-					AbstractTreeIterator.class);
-			AbstractTreeIterator stashWorkingIter = treeWalk.getTree(2,
-					AbstractTreeIterator.class);
-
-			if (stashWorkingIter != null && stashIndexIter != null) {
-				// Checkout index change
-				DirCacheEntry entry = cache.getEntry(path);
-				if (entry == null)
-					entry = new DirCacheEntry(treeWalk.getRawPath());
-				entry.setFileMode(stashIndexIter.getEntryFileMode());
-				entry.setObjectId(stashIndexIter.getEntryObjectId());
-				DirCacheCheckout.checkoutEntry(repo, file, entry,
-						treeWalk.getObjectReader());
-				final DirCacheEntry updatedEntry = entry;
-				editor.add(new PathEdit(path) {
-
-					public void apply(DirCacheEntry ent) {
-						ent.copyMetaData(updatedEntry);
-					}
-				});
-
-				// Checkout working directory change
-				if (!stashWorkingIter.idEqual(stashIndexIter)) {
-					entry = new DirCacheEntry(treeWalk.getRawPath());
-					entry.setObjectId(stashWorkingIter.getEntryObjectId());
-					DirCacheCheckout.checkoutEntry(repo, file, entry,
-							treeWalk.getObjectReader());
-				}
-			} else {
-				if (stashIndexIter == null
-						|| (stashHeadIter != null && !stashIndexIter
-								.idEqual(stashHeadIter)))
-					editor.add(new DeletePath(path));
-				FileUtils
-						.delete(file, FileUtils.RETRY | FileUtils.SKIP_MISSING);
-			}
-		}
-	}
-
 	/**
 	 * Apply the changes in a stashed commit to the working directory and index
 	 *
-	 * @return id of stashed commit that was applied
+	 * @return id of stashed commit that was applied TODO: Does anyone depend on
+	 *         this, or could we make it more like Merge/CherryPick/Revert?
 	 * @throws GitAPIException
 	 * @throws WrongRepositoryStateException
+	 * @throws NoHeadException
+	 * @throws StashApplyFailureException
 	 */
+	@Override
 	public ObjectId call() throws GitAPIException,
-			WrongRepositoryStateException {
+			WrongRepositoryStateException, NoHeadException,
+			StashApplyFailureException {
 		checkCallable();
 
-		if (repo.getRepositoryState() != RepositoryState.SAFE)
+		if (!ignoreRepositoryState
+				&& repo.getRepositoryState() != RepositoryState.SAFE)
 			throw new WrongRepositoryStateException(MessageFormat.format(
 					JGitText.get().stashApplyOnUnsafeRepository,
 					repo.getRepositoryState()));
 
-		final ObjectId headTree = getHeadTree();
-		final ObjectId stashId = getStashId();
+		try (ObjectReader reader = repo.newObjectReader();
+				RevWalk revWalk = new RevWalk(reader)) {
 
-		ObjectReader reader = repo.newObjectReader();
-		try {
-			RevWalk revWalk = new RevWalk(reader);
+			ObjectId headCommit = repo.resolve(Constants.HEAD);
+			if (headCommit == null)
+				throw new NoHeadException(JGitText.get().stashApplyWithoutHead);
+
+			final ObjectId stashId = getStashId();
 			RevCommit stashCommit = revWalk.parseCommit(stashId);
-			if (stashCommit.getParentCount() != 2)
+			if (stashCommit.getParentCount() < 2
+					|| stashCommit.getParentCount() > 3)
 				throw new JGitInternalException(MessageFormat.format(
-						JGitText.get().stashCommitMissingTwoParents,
-						stashId.name()));
+						JGitText.get().stashCommitIncorrectNumberOfParents,
+						stashId.name(),
+						Integer.valueOf(stashCommit.getParentCount())));
 
-			RevTree stashWorkingTree = stashCommit.getTree();
-			RevTree stashIndexTree = revWalk.parseCommit(
-					stashCommit.getParent(1)).getTree();
-			RevTree stashHeadTree = revWalk.parseCommit(
-					stashCommit.getParent(0)).getTree();
+			ObjectId headTree = repo.resolve(Constants.HEAD + "^{tree}"); //$NON-NLS-1$
+			ObjectId stashIndexCommit = revWalk.parseCommit(stashCommit
+					.getParent(1));
+			ObjectId stashHeadCommit = stashCommit.getParent(0);
+			ObjectId untrackedCommit = null;
+			if (applyUntracked && stashCommit.getParentCount() == 3)
+				untrackedCommit = revWalk.parseCommit(stashCommit.getParent(2));
 
-			CanonicalTreeParser stashWorkingIter = new CanonicalTreeParser();
-			stashWorkingIter.reset(reader, stashWorkingTree);
-			CanonicalTreeParser stashIndexIter = new CanonicalTreeParser();
-			stashIndexIter.reset(reader, stashIndexTree);
-			CanonicalTreeParser stashHeadIter = new CanonicalTreeParser();
-			stashHeadIter.reset(reader, stashHeadTree);
-			CanonicalTreeParser headIter = new CanonicalTreeParser();
-			headIter.reset(reader, headTree);
+			ResolveMerger merger = (ResolveMerger) strategy.newMerger(repo);
+			merger.setCommitNames(new String[] { "stashed HEAD", "HEAD", //$NON-NLS-1$ //$NON-NLS-2$
+					"stash" }); //$NON-NLS-1$
+			merger.setBase(stashHeadCommit);
+			merger.setWorkingTreeIterator(new FileTreeIterator(repo));
+			if (merger.merge(headCommit, stashCommit)) {
+				DirCache dc = repo.lockDirCache();
+				DirCacheCheckout dco = new DirCacheCheckout(repo, headTree,
+						dc, merger.getResultTreeId());
+				dco.setFailOnConflict(true);
+				dco.checkout(); // Ignoring failed deletes....
+				if (applyIndex) {
+					ResolveMerger ixMerger = (ResolveMerger) strategy
+							.newMerger(repo, true);
+					ixMerger.setCommitNames(new String[] { "stashed HEAD", //$NON-NLS-1$
+							"HEAD", "stashed index" }); //$NON-NLS-1$//$NON-NLS-2$
+					ixMerger.setBase(stashHeadCommit);
+					boolean ok = ixMerger.merge(headCommit, stashIndexCommit);
+					if (ok) {
+						resetIndex(revWalk
+								.parseTree(ixMerger.getResultTreeId()));
+					} else {
+						throw new StashApplyFailureException(
+								JGitText.get().stashApplyConflict);
+					}
+				}
 
-			DirCache cache = repo.lockDirCache();
-			DirCacheEditor editor = cache.editor();
-			try {
-				DirCacheIterator indexIter = new DirCacheIterator(cache);
-				FileTreeIterator workingIter = new FileTreeIterator(repo);
-
-				TreeWalk treeWalk = new TreeWalk(reader);
-				treeWalk.setRecursive(true);
-				treeWalk.setFilter(new StashDiffFilter());
-
-				treeWalk.addTree(stashHeadIter);
-				treeWalk.addTree(stashIndexIter);
-				treeWalk.addTree(stashWorkingIter);
-				treeWalk.addTree(headIter);
-				treeWalk.addTree(indexIter);
-				treeWalk.addTree(workingIter);
-
-				scanForConflicts(treeWalk);
-
-				// Reset trees and walk
-				treeWalk.reset();
-				stashWorkingIter.reset(reader, stashWorkingTree);
-				stashIndexIter.reset(reader, stashIndexTree);
-				stashHeadIter.reset(reader, stashHeadTree);
-				treeWalk.addTree(stashHeadIter);
-				treeWalk.addTree(stashIndexIter);
-				treeWalk.addTree(stashWorkingIter);
-
-				applyChanges(treeWalk, cache, editor);
-			} finally {
-				editor.commit();
-				cache.unlock();
+				if (untrackedCommit != null) {
+					ResolveMerger untrackedMerger = (ResolveMerger) strategy
+							.newMerger(repo, true);
+					untrackedMerger.setCommitNames(new String[] {
+							"null", "HEAD", "untracked files" }); //$NON-NLS-1$//$NON-NLS-2$//$NON-NLS-3$
+					// There is no common base for HEAD & untracked files
+					// because the commit for untracked files has no parent. If
+					// we use stashHeadCommit as common base (as in the other
+					// merges) we potentially report conflicts for files
+					// which are not even member of untracked files commit
+					untrackedMerger.setBase(null);
+					boolean ok = untrackedMerger.merge(headCommit,
+							untrackedCommit);
+					if (ok) {
+						try {
+							RevTree untrackedTree = revWalk
+									.parseTree(untrackedCommit);
+							resetUntracked(untrackedTree);
+						} catch (CheckoutConflictException e) {
+							throw new StashApplyFailureException(
+									JGitText.get().stashApplyConflict, e);
+						}
+					} else {
+						throw new StashApplyFailureException(
+								JGitText.get().stashApplyConflict);
+					}
+				}
+			} else {
+				throw new StashApplyFailureException(
+						JGitText.get().stashApplyConflict);
 			}
+			return stashId;
+
 		} catch (JGitInternalException e) {
 			throw e;
 		} catch (IOException e) {
 			throw new JGitInternalException(JGitText.get().stashApplyFailed, e);
-		} finally {
-			reader.release();
 		}
-		return stashId;
+	}
+
+	/**
+	 * @param applyIndex
+	 *            true (default) if the command should restore the index state
+	 */
+	public void setApplyIndex(boolean applyIndex) {
+		this.applyIndex = applyIndex;
+	}
+
+	/**
+	 * @param strategy
+	 *            The merge strategy to use in order to merge during this
+	 *            command execution.
+	 * @return {@code this}
+	 * @since 3.4
+	 */
+	public StashApplyCommand setStrategy(MergeStrategy strategy) {
+		this.strategy = strategy;
+		return this;
+	}
+
+	/**
+	 * @param applyUntracked
+	 *            true (default) if the command should restore untracked files
+	 * @since 3.4
+	 */
+	public void setApplyUntracked(boolean applyUntracked) {
+		this.applyUntracked = applyUntracked;
+	}
+
+	private void resetIndex(RevTree tree) throws IOException {
+		DirCache dc = repo.lockDirCache();
+		try (TreeWalk walk = new TreeWalk(repo)) {
+			DirCacheBuilder builder = dc.builder();
+
+			walk.addTree(tree);
+			walk.addTree(new DirCacheIterator(dc));
+			walk.setRecursive(true);
+
+			while (walk.next()) {
+				AbstractTreeIterator cIter = walk.getTree(0,
+						AbstractTreeIterator.class);
+				if (cIter == null) {
+					// Not in commit, don't add to new index
+					continue;
+				}
+
+				final DirCacheEntry entry = new DirCacheEntry(walk.getRawPath());
+				entry.setFileMode(cIter.getEntryFileMode());
+				entry.setObjectIdFromRaw(cIter.idBuffer(), cIter.idOffset());
+
+				DirCacheIterator dcIter = walk.getTree(1,
+						DirCacheIterator.class);
+				if (dcIter != null && dcIter.idEqual(cIter)) {
+					DirCacheEntry indexEntry = dcIter.getDirCacheEntry();
+					entry.setLastModified(indexEntry.getLastModified());
+					entry.setLength(indexEntry.getLength());
+				}
+
+				builder.add(entry);
+			}
+
+			builder.commit();
+		} finally {
+			dc.unlock();
+		}
+	}
+
+	private void resetUntracked(RevTree tree) throws CheckoutConflictException,
+			IOException {
+		// TODO maybe NameConflictTreeWalk ?
+		try (TreeWalk walk = new TreeWalk(repo)) {
+			walk.addTree(tree);
+			walk.addTree(new FileTreeIterator(repo));
+			walk.setRecursive(true);
+
+			final ObjectReader reader = walk.getObjectReader();
+
+			while (walk.next()) {
+				final AbstractTreeIterator cIter = walk.getTree(0,
+						AbstractTreeIterator.class);
+				if (cIter == null)
+					// Not in commit, don't create untracked
+					continue;
+
+				final EolStreamType eolStreamType = walk.getEolStreamType();
+				final DirCacheEntry entry = new DirCacheEntry(walk.getRawPath());
+				entry.setFileMode(cIter.getEntryFileMode());
+				entry.setObjectIdFromRaw(cIter.idBuffer(), cIter.idOffset());
+
+				FileTreeIterator fIter = walk
+						.getTree(1, FileTreeIterator.class);
+				if (fIter != null) {
+					if (fIter.isModified(entry, true, reader)) {
+						// file exists and is dirty
+						throw new CheckoutConflictException(
+								entry.getPathString());
+					}
+				}
+
+				checkoutPath(entry, reader,
+						new CheckoutMetadata(eolStreamType, null));
+			}
+		}
+	}
+
+	private void checkoutPath(DirCacheEntry entry, ObjectReader reader,
+			CheckoutMetadata checkoutMetadata) {
+		try {
+			DirCacheCheckout.checkoutEntry(repo, entry, reader, true,
+					checkoutMetadata);
+		} catch (IOException e) {
+			throw new JGitInternalException(MessageFormat.format(
+					JGitText.get().checkoutConflictWithFile,
+					entry.getPathString()), e);
+		}
 	}
 }

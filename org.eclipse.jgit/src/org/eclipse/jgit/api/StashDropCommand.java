@@ -46,22 +46,24 @@ import static org.eclipse.jgit.lib.Constants.R_STASH;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.StandardCopyOption;
 import java.text.MessageFormat;
 import java.util.List;
 
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.api.errors.InvalidRefNameException;
 import org.eclipse.jgit.api.errors.JGitInternalException;
+import org.eclipse.jgit.api.errors.RefNotFoundException;
 import org.eclipse.jgit.errors.LockFailedException;
 import org.eclipse.jgit.internal.JGitText;
+import org.eclipse.jgit.internal.storage.file.ReflogWriter;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.RefUpdate;
 import org.eclipse.jgit.lib.RefUpdate.Result;
+import org.eclipse.jgit.lib.ReflogEntry;
+import org.eclipse.jgit.lib.ReflogReader;
 import org.eclipse.jgit.lib.Repository;
-import org.eclipse.jgit.storage.file.ReflogEntry;
-import org.eclipse.jgit.storage.file.ReflogReader;
-import org.eclipse.jgit.storage.file.ReflogWriter;
 import org.eclipse.jgit.util.FileUtils;
 
 /**
@@ -116,7 +118,7 @@ public class StashDropCommand extends GitCommand<ObjectId> {
 
 	private Ref getRef() throws GitAPIException {
 		try {
-			return repo.getRef(R_STASH);
+			return repo.exactRef(R_STASH);
 		} catch (IOException e) {
 			throw new InvalidRefNameException(MessageFormat.format(
 					JGitText.get().cannotRead, R_STASH), e);
@@ -169,6 +171,7 @@ public class StashDropCommand extends GitCommand<ObjectId> {
 	 * @return commit id of stash reference or null if no more stashed changes
 	 * @throws GitAPIException
 	 */
+	@Override
 	public ObjectId call() throws GitAPIException {
 		checkCallable();
 
@@ -181,9 +184,13 @@ public class StashDropCommand extends GitCommand<ObjectId> {
 			return null;
 		}
 
-		ReflogReader reader = new ReflogReader(repo, R_STASH);
 		List<ReflogEntry> entries;
 		try {
+			ReflogReader reader = repo.getReflogReader(R_STASH);
+			if (reader == null) {
+				throw new RefNotFoundException(MessageFormat
+						.format(JGitText.get().refNotResolved, stashRef));
+			}
 			entries = reader.getReverseEntries();
 		} catch (IOException e) {
 			throw new JGitInternalException(JGitText.get().stashDropFailed, e);
@@ -215,12 +222,14 @@ public class StashDropCommand extends GitCommand<ObjectId> {
 						entry.getWho(), entry.getComment());
 				entryId = entry.getNewId();
 			}
-			if (!stashLockFile.renameTo(stashFile)) {
-				FileUtils.delete(stashFile);
-				if (!stashLockFile.renameTo(stashFile))
+			try {
+				FileUtils.rename(stashLockFile, stashFile,
+						StandardCopyOption.ATOMIC_MOVE);
+			} catch (IOException e) {
 					throw new JGitInternalException(MessageFormat.format(
-							JGitText.get().couldNotWriteFile,
-							stashLockFile.getPath(), stashFile.getPath()));
+							JGitText.get().renameFileFailed,
+								stashLockFile.getPath(), stashFile.getPath()),
+						e);
 			}
 		} catch (IOException e) {
 			throw new JGitInternalException(JGitText.get().stashDropFailed, e);
@@ -228,7 +237,7 @@ public class StashDropCommand extends GitCommand<ObjectId> {
 		updateRef(stashRef, entryId);
 
 		try {
-			Ref newStashRef = repo.getRef(R_STASH);
+			Ref newStashRef = repo.exactRef(R_STASH);
 			return newStashRef != null ? newStashRef.getObjectId() : null;
 		} catch (IOException e) {
 			throw new InvalidRefNameException(MessageFormat.format(

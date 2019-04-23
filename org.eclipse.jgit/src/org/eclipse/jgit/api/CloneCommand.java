@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2011, Chris Aniszczyk <caniszczyk@gmail.com>
+ * Copyright (C) 2011, 2013 Chris Aniszczyk <caniszczyk@gmail.com>
  * and other copyright owners as documented in the project's IP log.
  *
  * This program and the accompanying materials are made available
@@ -58,9 +58,11 @@ import org.eclipse.jgit.dircache.DirCacheCheckout;
 import org.eclipse.jgit.errors.IncorrectObjectTypeException;
 import org.eclipse.jgit.errors.MissingObjectException;
 import org.eclipse.jgit.internal.JGitText;
+import org.eclipse.jgit.lib.BranchConfig.BranchRebaseMode;
 import org.eclipse.jgit.lib.ConfigConstants;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.NullProgressMonitor;
+import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.ProgressMonitor;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.RefUpdate;
@@ -85,6 +87,8 @@ public class CloneCommand extends TransportCommand<CloneCommand, Git> {
 	private String uri;
 
 	private File directory;
+
+	private File gitDir;
 
 	private boolean bare;
 
@@ -112,37 +116,71 @@ public class CloneCommand extends TransportCommand<CloneCommand, Git> {
 	/**
 	 * Executes the {@code Clone} command.
 	 *
+	 * The Git instance returned by this command needs to be closed by the
+	 * caller to free resources held by the underlying {@link Repository}
+	 * instance. It is recommended to call this method as soon as you don't need
+	 * a reference to this {@link Git} instance and the underlying
+	 * {@link Repository} instance anymore.
+	 *
 	 * @return the newly created {@code Git} object with associated repository
 	 * @throws InvalidRemoteException
 	 * @throws org.eclipse.jgit.api.errors.TransportException
 	 * @throws GitAPIException
 	 */
+	@Override
 	public Git call() throws GitAPIException, InvalidRemoteException,
 			org.eclipse.jgit.api.errors.TransportException {
+		Repository repository = null;
 		try {
 			URIish u = new URIish(uri);
-			Repository repository = init(u);
+			repository = init(u);
 			FetchResult result = fetch(repository, u);
 			if (!noCheckout)
 				checkout(repository, result);
-			return new Git(repository);
+			return new Git(repository, true);
 		} catch (IOException ioe) {
+			if (repository != null) {
+				repository.close();
+			}
 			throw new JGitInternalException(ioe.getMessage(), ioe);
 		} catch (URISyntaxException e) {
+			if (repository != null) {
+				repository.close();
+			}
 			throw new InvalidRemoteException(MessageFormat.format(
 					JGitText.get().invalidRemote, remote));
 		}
 	}
 
+	private static boolean isNonEmptyDirectory(File dir) {
+		if (dir != null && dir.exists()) {
+			File[] files = dir.listFiles();
+			return files != null && files.length != 0;
+		}
+		return false;
+	}
+
 	private Repository init(URIish u) throws GitAPIException {
 		InitCommand command = Git.init();
 		command.setBare(bare);
-		if (directory == null)
+		if (directory == null && gitDir == null) {
 			directory = new File(u.getHumanishName(), Constants.DOT_GIT);
-		if (directory.exists() && directory.listFiles().length != 0)
+		}
+		validateDirs(directory, gitDir, bare);
+		if (isNonEmptyDirectory(directory)) {
 			throw new JGitInternalException(MessageFormat.format(
 					JGitText.get().cloneNonEmptyDirectory, directory.getName()));
-		command.setDirectory(directory);
+		}
+		if (isNonEmptyDirectory(gitDir)) {
+			throw new JGitInternalException(MessageFormat.format(
+					JGitText.get().cloneNonEmptyDirectory, gitDir.getName()));
+		}
+		if (directory != null) {
+			command.setDirectory(directory);
+		}
+		if (gitDir != null) {
+			command.setGitDir(gitDir);
+		}
 		return command.call().getRepository();
 	}
 
@@ -154,11 +192,11 @@ public class CloneCommand extends TransportCommand<CloneCommand, Git> {
 		RemoteConfig config = new RemoteConfig(clonedRepo.getConfig(), remote);
 		config.addURI(u);
 
-		final String dst = bare ? Constants.R_HEADS : Constants.R_REMOTES
-				+ config.getName();
+		final String dst = (bare ? Constants.R_HEADS : Constants.R_REMOTES
+				+ config.getName() + "/") + "*"; //$NON-NLS-1$//$NON-NLS-2$
 		RefSpec refSpec = new RefSpec();
 		refSpec = refSpec.setForceUpdate(true);
-		refSpec = refSpec.setSourceDestination(Constants.R_HEADS + "*", dst + "/*"); //$NON-NLS-1$ //$NON-NLS-2$
+		refSpec = refSpec.setSourceDestination(Constants.R_HEADS + "*", dst); //$NON-NLS-1$
 
 		config.addFetchRefSpec(refSpec);
 		config.update(clonedRepo.getConfig());
@@ -181,8 +219,8 @@ public class CloneCommand extends TransportCommand<CloneCommand, Git> {
 	private List<RefSpec> calculateRefSpecs(final String dst) {
 		RefSpec wcrs = new RefSpec();
 		wcrs = wcrs.setForceUpdate(true);
-		wcrs = wcrs.setSourceDestination(Constants.R_HEADS + "*", dst + "/*"); //$NON-NLS-1$ //$NON-NLS-2$
-		List<RefSpec> specs = new ArrayList<RefSpec>();
+		wcrs = wcrs.setSourceDestination(Constants.R_HEADS + "*", dst); //$NON-NLS-1$
+		List<RefSpec> specs = new ArrayList<>();
 		if (cloneAllBranches)
 			specs.add(wcrs);
 		else if (branchesToClone != null
@@ -198,15 +236,22 @@ public class CloneCommand extends TransportCommand<CloneCommand, Git> {
 			throws MissingObjectException, IncorrectObjectTypeException,
 			IOException, GitAPIException {
 
-		Ref head = result.getAdvertisedRef(branch);
+		Ref head = null;
 		if (branch.equals(Constants.HEAD)) {
 			Ref foundBranch = findBranchToCheckout(result);
 			if (foundBranch != null)
 				head = foundBranch;
 		}
+		if (head == null) {
+			head = result.getAdvertisedRef(branch);
+			if (head == null)
+				head = result.getAdvertisedRef(Constants.R_HEADS + branch);
+			if (head == null)
+				head = result.getAdvertisedRef(Constants.R_TAGS + branch);
+		}
 
 		if (head == null || head.getObjectId() == null)
-			return; // throw exception?
+			return; // TODO throw exception?
 
 		if (head.getName().startsWith(Constants.R_HEADS)) {
 			final RefUpdate newHead = clonedRepo.updateRef(Constants.HEAD);
@@ -258,20 +303,24 @@ public class CloneCommand extends TransportCommand<CloneCommand, Git> {
 
 	private Ref findBranchToCheckout(FetchResult result) {
 		final Ref idHEAD = result.getAdvertisedRef(Constants.HEAD);
-		if (idHEAD == null)
+		ObjectId headId = idHEAD != null ? idHEAD.getObjectId() : null;
+		if (headId == null) {
 			return null;
+		}
 
 		Ref master = result.getAdvertisedRef(Constants.R_HEADS
 				+ Constants.MASTER);
-		if (master != null && master.getObjectId().equals(idHEAD.getObjectId()))
+		ObjectId objectId = master != null ? master.getObjectId() : null;
+		if (headId.equals(objectId)) {
 			return master;
+		}
 
 		Ref foundBranch = null;
 		for (final Ref r : result.getAdvertisedRefs()) {
 			final String n = r.getName();
 			if (!n.startsWith(Constants.R_HEADS))
 				continue;
-			if (r.getObjectId().equals(idHEAD.getObjectId())) {
+			if (headId.equals(r.getObjectId())) {
 				foundBranch = r;
 				break;
 			}
@@ -291,28 +340,26 @@ public class CloneCommand extends TransportCommand<CloneCommand, Git> {
 				ConfigConstants.CONFIG_KEY_AUTOSETUPREBASE);
 		if (ConfigConstants.CONFIG_KEY_ALWAYS.equals(autosetupRebase)
 				|| ConfigConstants.CONFIG_KEY_REMOTE.equals(autosetupRebase))
-			clonedRepo.getConfig().setBoolean(
+			clonedRepo.getConfig().setEnum(
 					ConfigConstants.CONFIG_BRANCH_SECTION, branchName,
-					ConfigConstants.CONFIG_KEY_REBASE, true);
+					ConfigConstants.CONFIG_KEY_REBASE, BranchRebaseMode.REBASE);
 		clonedRepo.getConfig().save();
 	}
 
 	private RevCommit parseCommit(final Repository clonedRepo, final Ref ref)
 			throws MissingObjectException, IncorrectObjectTypeException,
 			IOException {
-		final RevWalk rw = new RevWalk(clonedRepo);
 		final RevCommit commit;
-		try {
+		try (final RevWalk rw = new RevWalk(clonedRepo)) {
 			commit = rw.parseCommit(ref.getObjectId());
-		} finally {
-			rw.release();
 		}
 		return commit;
 	}
 
 	/**
 	 * @param uri
-	 *            the uri to clone from
+	 *            the URI to clone from, or {@code null} to unset the URI.
+	 *            The URI must be set before {@link #call} is called.
 	 * @return this instance
 	 */
 	public CloneCommand setURI(String uri) {
@@ -327,11 +374,36 @@ public class CloneCommand extends TransportCommand<CloneCommand, Git> {
 	 * @see URIish#getHumanishName()
 	 *
 	 * @param directory
-	 *            the directory to clone to
+	 *            the directory to clone to, or {@code null} if the directory
+	 *            name should be taken from the source uri
 	 * @return this instance
+	 * @throws IllegalStateException
+	 *             if the combination of directory, gitDir and bare is illegal.
+	 *             E.g. if for a non-bare repository directory and gitDir point
+	 *             to the same directory of if for a bare repository both
+	 *             directory and gitDir are specified
 	 */
 	public CloneCommand setDirectory(File directory) {
+		validateDirs(directory, gitDir, bare);
 		this.directory = directory;
+		return this;
+	}
+
+	/**
+	 * @param gitDir
+	 *            the repository meta directory, or {@code null} to choose one
+	 *            automatically at clone time
+	 * @return this instance
+	 * @throws IllegalStateException
+	 *             if the combination of directory, gitDir and bare is illegal.
+	 *             E.g. if for a non-bare repository directory and gitDir point
+	 *             to the same directory of if for a bare repository both
+	 *             directory and gitDir are specified
+	 * @since 3.6
+	 */
+	public CloneCommand setGitDir(File gitDir) {
+		validateDirs(directory, gitDir, bare);
+		this.gitDir = gitDir;
 		return this;
 	}
 
@@ -339,8 +411,14 @@ public class CloneCommand extends TransportCommand<CloneCommand, Git> {
 	 * @param bare
 	 *            whether the cloned repository is bare or not
 	 * @return this instance
+	 * @throws IllegalStateException
+	 *             if the combination of directory, gitDir and bare is illegal.
+	 *             E.g. if for a non-bare repository directory and gitDir point
+	 *             to the same directory of if for a bare repository both
+	 *             directory and gitDir are specified
 	 */
-	public CloneCommand setBare(boolean bare) {
+	public CloneCommand setBare(boolean bare) throws IllegalStateException {
+		validateDirs(directory, gitDir, bare);
 		this.bare = bare;
 		return this;
 	}
@@ -352,20 +430,32 @@ public class CloneCommand extends TransportCommand<CloneCommand, Git> {
 	 *
 	 * @see Constants#DEFAULT_REMOTE_NAME
 	 * @param remote
-	 *            name that keeps track of the upstream repository
+	 *            name that keeps track of the upstream repository.
+	 *            {@code null} means to use DEFAULT_REMOTE_NAME.
 	 * @return this instance
 	 */
 	public CloneCommand setRemote(String remote) {
+		if (remote == null) {
+			remote = Constants.DEFAULT_REMOTE_NAME;
+		}
 		this.remote = remote;
 		return this;
 	}
 
 	/**
 	 * @param branch
-	 *            the initial branch to check out when cloning the repository
+	 *            the initial branch to check out when cloning the repository.
+	 *            Can be specified as ref name (<code>refs/heads/master</code>),
+	 *            branch name (<code>master</code>) or tag name (<code>v1.2.3</code>).
+	 *            The default is to use the branch pointed to by the cloned
+	 *            repository's HEAD and can be requested by passing {@code null}
+	 *            or <code>HEAD</code>.
 	 * @return this instance
 	 */
 	public CloneCommand setBranch(String branch) {
+		if (branch == null) {
+			branch = Constants.HEAD;
+		}
 		this.branch = branch;
 		return this;
 	}
@@ -380,6 +470,9 @@ public class CloneCommand extends TransportCommand<CloneCommand, Git> {
 	 * @return {@code this}
 	 */
 	public CloneCommand setProgressMonitor(ProgressMonitor monitor) {
+		if (monitor == null) {
+			monitor = NullProgressMonitor.INSTANCE;
+		}
 		this.monitor = monitor;
 		return this;
 	}
@@ -409,7 +502,8 @@ public class CloneCommand extends TransportCommand<CloneCommand, Git> {
 	/**
 	 * @param branchesToClone
 	 *            collection of branches to clone. Ignored when allSelected is
-	 *            true.
+	 *            true. Must be specified as full ref names (e.g.
+	 *            <code>refs/heads/master</code>).
 	 * @return {@code this}
 	 */
 	public CloneCommand setBranchesToClone(Collection<String> branchesToClone) {
@@ -427,5 +521,31 @@ public class CloneCommand extends TransportCommand<CloneCommand, Git> {
 	public CloneCommand setNoCheckout(boolean noCheckout) {
 		this.noCheckout = noCheckout;
 		return this;
+	}
+
+	private static void validateDirs(File directory, File gitDir, boolean bare)
+			throws IllegalStateException {
+		if (directory != null) {
+			if (directory.exists() && !directory.isDirectory()) {
+				throw new IllegalStateException(MessageFormat.format(
+						JGitText.get().initFailedDirIsNoDirectory, directory));
+			}
+			if (gitDir != null && gitDir.exists() && !gitDir.isDirectory()) {
+				throw new IllegalStateException(MessageFormat.format(
+						JGitText.get().initFailedGitDirIsNoDirectory,
+						gitDir));
+			}
+			if (bare) {
+				if (gitDir != null && !gitDir.equals(directory))
+					throw new IllegalStateException(MessageFormat.format(
+							JGitText.get().initFailedBareRepoDifferentDirs,
+							gitDir, directory));
+			} else {
+				if (gitDir != null && gitDir.equals(directory))
+					throw new IllegalStateException(MessageFormat.format(
+							JGitText.get().initFailedNonBareRepoSameDirs,
+							gitDir, directory));
+			}
+		}
 	}
 }

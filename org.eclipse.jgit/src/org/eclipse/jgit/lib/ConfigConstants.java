@@ -1,6 +1,7 @@
 /*
  * Copyright (C) 2010, Mathias Kinzler <mathias.kinzler@sap.com>
  * Copyright (C) 2010, Chris Aniszczyk <caniszczyk@gmail.com>
+ * Copyright (C) 2012-2013, Robin Rosenberg
  * and other copyright owners as documented in the project's IP log.
  *
  * This program and the accompanying materials are made available
@@ -47,6 +48,7 @@ package org.eclipse.jgit.lib;
  * Constants for use with the Configuration classes: section names,
  * configuration keys
  */
+@SuppressWarnings("nls")
 public class ConfigConstants {
 	/** The "core" section */
 	public static final String CONFIG_CORE_SECTION = "core";
@@ -63,6 +65,12 @@ public class ConfigConstants {
 	/** The "dfs" section */
 	public static final String CONFIG_DFS_SECTION = "dfs";
 
+	/**
+	 * The "receive" section
+	 * @since 4.6
+	 */
+	public static final String CONFIG_RECEIVE_SECTION = "receive";
+
 	/** The "user" section */
 	public static final String CONFIG_USER_SECTION = "user";
 
@@ -75,11 +83,35 @@ public class ConfigConstants {
 	/** The "submodule" section */
 	public static final String CONFIG_SUBMODULE_SECTION = "submodule";
 
+	/**
+	 * The "rebase" section
+	 * @since 3.2
+	 */
+	public static final String CONFIG_REBASE_SECTION = "rebase";
+
 	/** The "gc" section */
 	public static final String CONFIG_GC_SECTION = "gc";
 
 	/** The "pack" section */
 	public static final String CONFIG_PACK_SECTION = "pack";
+
+	/**
+	 * The "fetch" section
+	 * @since 3.3
+	 */
+	public static final String CONFIG_FETCH_SECTION = "fetch";
+
+	/**
+	 * The "pull" section
+	 * @since 3.5
+	 */
+	public static final String CONFIG_PULL_SECTION = "pull";
+
+	/**
+	 * The "filter" section
+	 * @since 4.6
+	 */
+	public static final String CONFIG_FILTER_SECTION = "filter";
 
 	/** The "algorithm" key */
 	public static final String CONFIG_KEY_ALGORITHM = "algorithm";
@@ -87,11 +119,43 @@ public class ConfigConstants {
 	/** The "autocrlf" key */
 	public static final String CONFIG_KEY_AUTOCRLF = "autocrlf";
 
+	/**
+	 * The "auto" key
+	 * @since 4.6
+	 */
+	public static final String CONFIG_KEY_AUTO = "auto";
+
+	/**
+	 * The "autogc" key
+	 * @since 4.6
+	 */
+	public static final String CONFIG_KEY_AUTOGC = "autogc";
+
+	/**
+	 * The "autopacklimit" key
+	 * @since 4.6
+	 */
+	public static final String CONFIG_KEY_AUTOPACKLIMIT = "autopacklimit";
+
+	/**
+	 * The "eol" key
+	 *
+	 * @since 4.3
+	 */
+	public static final String CONFIG_KEY_EOL = "eol";
+
 	/** The "bare" key */
 	public static final String CONFIG_KEY_BARE = "bare";
 
 	/** The "excludesfile" key */
 	public static final String CONFIG_KEY_EXCLUDESFILE = "excludesfile";
+
+	/**
+	 * The "attributesfile" key
+	 *
+	 * @since 3.7
+	 */
+	public static final String CONFIG_KEY_ATTRIBUTESFILE = "attributesfile";
 
 	/** The "filemode" key */
 	public static final String CONFIG_KEY_FILEMODE = "filemode";
@@ -111,14 +175,21 @@ public class ConfigConstants {
 	/** The "blockSize" key */
 	public static final String CONFIG_KEY_BLOCK_SIZE = "blockSize";
 
-	/** The "readAheadLimit" key */
-	public static final String CONFIG_KEY_READ_AHEAD_LIMIT = "readAheadLimit";
-
-	/** The "readAheadThreads" key */
-	public static final String CONFIG_KEY_READ_AHEAD_THREADS = "readAheadThreads";
+	/**
+	 * The "concurrencyLevel" key
+	 *
+	 * @since 4.6
+	 */
+	public static final String CONFIG_KEY_CONCURRENCY_LEVEL = "concurrencyLevel";
 
 	/** The "deltaBaseCacheLimit" key */
 	public static final String CONFIG_KEY_DELTA_BASE_CACHE_LIMIT = "deltaBaseCacheLimit";
+
+	/**
+	 * The "symlinks" key
+	 * @since 3.3
+	 */
+	public static final String CONFIG_KEY_SYMLINKS = "symlinks";
 
 	/** The "streamFileThreshold" key */
 	public static final String CONFIG_KEY_STREAM_FILE_TRESHOLD = "streamFileThreshold";
@@ -140,6 +211,13 @@ public class ConfigConstants {
 
 	/** The "autosetuprebase" key */
 	public static final String CONFIG_KEY_AUTOSETUPREBASE = "autosetuprebase";
+
+	/**
+	 * The "autostash" key
+	 * @since 3.2
+	 */
+	public static final String CONFIG_KEY_AUTOSTASH = "autostash";
+
 	/** The "name" key */
 	public static final String CONFIG_KEY_NAME = "name";
 
@@ -176,15 +254,157 @@ public class ConfigConstants {
 	/** The "update" key */
 	public static final String CONFIG_KEY_UPDATE = "update";
 
+	/**
+	 * The "ignore" key
+	 * @since 3.6
+	 */
+	public static final String CONFIG_KEY_IGNORE = "ignore";
+
 	/** The "compression" key */
 	public static final String CONFIG_KEY_COMPRESSION = "compression";
 
 	/** The "indexversion" key */
 	public static final String CONFIG_KEY_INDEXVERSION = "indexversion";
 
+	/**
+	 * The "hidedotfiles" key
+	 * @since 3.5
+	 */
+	public static final String CONFIG_KEY_HIDEDOTFILES = "hidedotfiles";
+
+	/**
+	 * The "dirnogitlinks" key
+	 * @since 4.3
+	 */
+	public static final String CONFIG_KEY_DIRNOGITLINKS = "dirNoGitLinks";
+
 	/** The "precomposeunicode" key */
 	public static final String CONFIG_KEY_PRECOMPOSEUNICODE = "precomposeunicode";
 
 	/** The "pruneexpire" key */
 	public static final String CONFIG_KEY_PRUNEEXPIRE = "pruneexpire";
+
+	/**
+	 * The "prunepackexpire" key
+	 * @since 4.3
+	 */
+	public static final String CONFIG_KEY_PRUNEPACKEXPIRE = "prunepackexpire";
+
+	/**
+	 * The "logexpiry" key
+	 *
+	 * @since 4.7
+	 */
+	public static final String CONFIG_KEY_LOGEXPIRY = "logExpiry";
+
+	/**
+	 * The "autodetach" key
+	 *
+	 * @since 4.7
+	 */
+	public static final String CONFIG_KEY_AUTODETACH = "autoDetach";
+
+	/**
+	 * The "aggressiveDepth" key
+	 * @since 3.6
+	 */
+	public static final String CONFIG_KEY_AGGRESSIVE_DEPTH = "aggressiveDepth";
+
+	/**
+	 * The "aggressiveWindow" key
+	 * @since 3.6
+	 */
+	public static final String CONFIG_KEY_AGGRESSIVE_WINDOW = "aggressiveWindow";
+
+	/** The "mergeoptions" key */
+	public static final String CONFIG_KEY_MERGEOPTIONS = "mergeoptions";
+
+	/** The "ff" key */
+	public static final String CONFIG_KEY_FF = "ff";
+
+	/**
+	 * The "checkstat" key
+	 * @since 3.0
+	 */
+	public static final String CONFIG_KEY_CHECKSTAT = "checkstat";
+
+	/**
+	 * The "renamelimit" key in the "diff section"
+	 * @since 3.0
+	 */
+	public static final String CONFIG_KEY_RENAMELIMIT = "renamelimit";
+
+	/**
+	 * The "trustfolderstat" key in the "core section"
+	 * @since 3.6
+	 */
+	public static final String CONFIG_KEY_TRUSTFOLDERSTAT = "trustfolderstat";
+
+	/**
+	 * The "supportsAtomicFileCreation" key in the "core section"
+	 *
+	 * @since 4.5
+	 */
+	public static final String CONFIG_KEY_SUPPORTSATOMICFILECREATION = "supportsatomicfilecreation";
+
+	/**
+	 * The "noprefix" key in the "diff section"
+	 * @since 3.0
+	 */
+	public static final String CONFIG_KEY_NOPREFIX = "noprefix";
+
+	/**
+	 * A "renamelimit" value in the "diff section"
+	 * @since 3.0
+	 */
+	public static final String CONFIG_RENAMELIMIT_COPY = "copy";
+
+	/**
+	 * A "renamelimit" value in the "diff section"
+	 * @since 3.0
+	 */
+	public static final String CONFIG_RENAMELIMIT_COPIES = "copies";
+
+	/**
+	 * The "renames" key in the "diff section"
+	 * @since 3.0
+	 */
+	public static final String CONFIG_KEY_RENAMES = "renames";
+
+	/**
+	 * The "prune" key
+	 * @since 3.3
+	 */
+	public static final String CONFIG_KEY_PRUNE = "prune";
+
+	/**
+	 * The "streamBuffer" key
+	 * @since 4.0
+	 */
+	public static final String CONFIG_KEY_STREAM_BUFFER = "streamBuffer";
+
+	/**
+	 * The "streamRatio" key
+	 * @since 4.0
+	 */
+	public static final String CONFIG_KEY_STREAM_RATIO = "streamRatio";
+
+	/**
+	 * Flag in the filter section whether to use JGit's implementations of
+	 * filters and hooks
+	 * @since 4.6
+	 */
+	public static final String CONFIG_KEY_USEJGITBUILTIN = "useJGitBuiltin";
+
+	/**
+	 * The "fetchRecurseSubmodules" key
+	 * @since 4.7
+	 */
+	public static final String CONFIG_KEY_FETCH_RECURSE_SUBMODULES = "fetchRecurseSubmodules";
+
+	/**
+	 * The "recurseSubmodules" key
+	 * @since 4.7
+	 */
+	public static final String CONFIG_KEY_RECURSE_SUBMODULES = "recurseSubmodules";
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2008, Google Inc.
+ * Copyright (C) 2008, 2014 Google Inc.
  * and other copyright owners as documented in the project's IP log.
  *
  * This program and the accompanying materials are made available
@@ -44,16 +44,18 @@
 package org.eclipse.jgit.transport;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 
+import org.eclipse.jgit.junit.RepositoryTestCase;
 import org.eclipse.jgit.lib.Constants;
-import org.eclipse.jgit.lib.RepositoryTestCase;
 import org.eclipse.jgit.transport.OpenSshConfig.Host;
 import org.eclipse.jgit.util.FileUtils;
 import org.junit.Before;
@@ -66,6 +68,7 @@ public class OpenSshConfigTest extends RepositoryTestCase {
 
 	private OpenSshConfig osc;
 
+	@Override
 	@Before
 	public void setUp() throws Exception {
 		super.setUp();
@@ -94,6 +97,7 @@ public class OpenSshConfigTest extends RepositoryTestCase {
 		assertEquals("repo.or.cz", h.getHostName());
 		assertEquals("jex_junit", h.getUser());
 		assertEquals(22, h.getPort());
+		assertEquals(1, h.getConnectionAttempts());
 		assertNull(h.getIdentityFile());
 	}
 
@@ -228,7 +232,7 @@ public class OpenSshConfigTest extends RepositoryTestCase {
 	public void testAlias_BatchModeDefault() throws Exception {
 		final Host h = osc.lookup("orcz");
 		assertNotNull(h);
-		assertEquals(false, h.isBatchMode());
+		assertFalse(h.isBatchMode());
 	}
 
 	@Test
@@ -236,7 +240,7 @@ public class OpenSshConfigTest extends RepositoryTestCase {
 		config("Host orcz\n" + "\tBatchMode yes\n");
 		final Host h = osc.lookup("orcz");
 		assertNotNull(h);
-		assertEquals(true, h.isBatchMode());
+		assertTrue(h.isBatchMode());
 	}
 
 	@Test
@@ -245,6 +249,37 @@ public class OpenSshConfigTest extends RepositoryTestCase {
 				+ "\tBatchMode yes\n");
 		final Host h = osc.lookup("orcz");
 		assertNotNull(h);
-		assertEquals(true, h.isBatchMode());
+		assertTrue(h.isBatchMode());
+	}
+
+	@Test
+	public void testAlias_ConnectionAttemptsDefault() throws Exception {
+		final Host h = osc.lookup("orcz");
+		assertNotNull(h);
+		assertEquals(1, h.getConnectionAttempts());
+	}
+
+	@Test
+	public void testAlias_ConnectionAttempts() throws Exception {
+		config("Host orcz\n" + "\tConnectionAttempts 5\n");
+		final Host h = osc.lookup("orcz");
+		assertNotNull(h);
+		assertEquals(5, h.getConnectionAttempts());
+	}
+
+	@Test
+	public void testAlias_invalidConnectionAttempts() throws Exception {
+		config("Host orcz\n" + "\tConnectionAttempts -1\n");
+		final Host h = osc.lookup("orcz");
+		assertNotNull(h);
+		assertEquals(1, h.getConnectionAttempts());
+	}
+
+	@Test
+	public void testAlias_badConnectionAttempts() throws Exception {
+		config("Host orcz\n" + "\tConnectionAttempts xxx\n");
+		final Host h = osc.lookup("orcz");
+		assertNotNull(h);
+		assertEquals(1, h.getConnectionAttempts());
 	}
 }

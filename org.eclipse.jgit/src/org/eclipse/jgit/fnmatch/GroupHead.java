@@ -57,15 +57,15 @@ final class GroupHead extends AbstractHead {
 	private final List<CharacterPattern> characterClasses;
 
 	private static final Pattern REGEX_PATTERN = Pattern
-			.compile("([^-][-][^-]|\\[[.:=].*?[.:=]\\])");
+			.compile("([^-][-][^-]|\\[[.:=].*?[.:=]\\])"); //$NON-NLS-1$
 
 	private final boolean inverse;
 
 	GroupHead(String pattern, final String wholePattern)
 			throws InvalidPatternException {
 		super(false);
-		this.characterClasses = new ArrayList<CharacterPattern>();
-		this.inverse = pattern.startsWith("!");
+		this.characterClasses = new ArrayList<>();
+		this.inverse = pattern.startsWith("!"); //$NON-NLS-1$
 		if (inverse) {
 			pattern = pattern.substring(1);
 		}
@@ -76,51 +76,51 @@ final class GroupHead extends AbstractHead {
 				final char start = characterClass.charAt(0);
 				final char end = characterClass.charAt(2);
 				characterClasses.add(new CharacterRange(start, end));
-			} else if (characterClass.equals("[:alnum:]")) {
+			} else if (characterClass.equals("[:alnum:]")) { //$NON-NLS-1$
 				characterClasses.add(LetterPattern.INSTANCE);
 				characterClasses.add(DigitPattern.INSTANCE);
-			} else if (characterClass.equals("[:alpha:]")) {
+			} else if (characterClass.equals("[:alpha:]")) { //$NON-NLS-1$
 				characterClasses.add(LetterPattern.INSTANCE);
-			} else if (characterClass.equals("[:blank:]")) {
+			} else if (characterClass.equals("[:blank:]")) { //$NON-NLS-1$
 				characterClasses.add(new OneCharacterPattern(' '));
 				characterClasses.add(new OneCharacterPattern('\t'));
-			} else if (characterClass.equals("[:cntrl:]")) {
+			} else if (characterClass.equals("[:cntrl:]")) { //$NON-NLS-1$
 				characterClasses.add(new CharacterRange('\u0000', '\u001F'));
 				characterClasses.add(new OneCharacterPattern('\u007F'));
-			} else if (characterClass.equals("[:digit:]")) {
+			} else if (characterClass.equals("[:digit:]")) { //$NON-NLS-1$
 				characterClasses.add(DigitPattern.INSTANCE);
-			} else if (characterClass.equals("[:graph:]")) {
+			} else if (characterClass.equals("[:graph:]")) { //$NON-NLS-1$
 				characterClasses.add(new CharacterRange('\u0021', '\u007E'));
 				characterClasses.add(LetterPattern.INSTANCE);
 				characterClasses.add(DigitPattern.INSTANCE);
-			} else if (characterClass.equals("[:lower:]")) {
+			} else if (characterClass.equals("[:lower:]")) { //$NON-NLS-1$
 				characterClasses.add(LowerPattern.INSTANCE);
-			} else if (characterClass.equals("[:print:]")) {
+			} else if (characterClass.equals("[:print:]")) { //$NON-NLS-1$
 				characterClasses.add(new CharacterRange('\u0020', '\u007E'));
 				characterClasses.add(LetterPattern.INSTANCE);
 				characterClasses.add(DigitPattern.INSTANCE);
-			} else if (characterClass.equals("[:punct:]")) {
+			} else if (characterClass.equals("[:punct:]")) { //$NON-NLS-1$
 				characterClasses.add(PunctPattern.INSTANCE);
-			} else if (characterClass.equals("[:space:]")) {
+			} else if (characterClass.equals("[:space:]")) { //$NON-NLS-1$
 				characterClasses.add(WhitespacePattern.INSTANCE);
-			} else if (characterClass.equals("[:upper:]")) {
+			} else if (characterClass.equals("[:upper:]")) { //$NON-NLS-1$
 				characterClasses.add(UpperPattern.INSTANCE);
-			} else if (characterClass.equals("[:xdigit:]")) {
+			} else if (characterClass.equals("[:xdigit:]")) { //$NON-NLS-1$
 				characterClasses.add(new CharacterRange('0', '9'));
 				characterClasses.add(new CharacterRange('a', 'f'));
 				characterClasses.add(new CharacterRange('A', 'F'));
-			} else if (characterClass.equals("[:word:]")) {
+			} else if (characterClass.equals("[:word:]")) { //$NON-NLS-1$
 				characterClasses.add(new OneCharacterPattern('_'));
 				characterClasses.add(LetterPattern.INSTANCE);
 				characterClasses.add(DigitPattern.INSTANCE);
 			} else {
-				final String message = String.format(MessageFormat.format(
+				final String message = MessageFormat.format(
 						JGitText.get().characterClassIsNotSupported,
-						characterClass));
+						characterClass);
 				throw new InvalidPatternException(message, wholePattern);
 			}
 
-			pattern = matcher.replaceFirst("");
+			pattern = matcher.replaceFirst(""); //$NON-NLS-1$
 			matcher.reset(pattern);
 		}
 		// pattern contains now no ranges
@@ -159,6 +159,7 @@ final class GroupHead extends AbstractHead {
 			this.end = end;
 		}
 
+		@Override
 		public final boolean matches(char c) {
 			return start <= c && c <= end;
 		}
@@ -167,6 +168,7 @@ final class GroupHead extends AbstractHead {
 	private static final class DigitPattern implements CharacterPattern {
 		static final GroupHead.DigitPattern INSTANCE = new DigitPattern();
 
+		@Override
 		public final boolean matches(char c) {
 			return Character.isDigit(c);
 		}
@@ -175,6 +177,7 @@ final class GroupHead extends AbstractHead {
 	private static final class LetterPattern implements CharacterPattern {
 		static final GroupHead.LetterPattern INSTANCE = new LetterPattern();
 
+		@Override
 		public final boolean matches(char c) {
 			return Character.isLetter(c);
 		}
@@ -183,6 +186,7 @@ final class GroupHead extends AbstractHead {
 	private static final class LowerPattern implements CharacterPattern {
 		static final GroupHead.LowerPattern INSTANCE = new LowerPattern();
 
+		@Override
 		public final boolean matches(char c) {
 			return Character.isLowerCase(c);
 		}
@@ -191,6 +195,7 @@ final class GroupHead extends AbstractHead {
 	private static final class UpperPattern implements CharacterPattern {
 		static final GroupHead.UpperPattern INSTANCE = new UpperPattern();
 
+		@Override
 		public final boolean matches(char c) {
 			return Character.isUpperCase(c);
 		}
@@ -199,6 +204,7 @@ final class GroupHead extends AbstractHead {
 	private static final class WhitespacePattern implements CharacterPattern {
 		static final GroupHead.WhitespacePattern INSTANCE = new WhitespacePattern();
 
+		@Override
 		public final boolean matches(char c) {
 			return Character.isWhitespace(c);
 		}
@@ -211,6 +217,7 @@ final class GroupHead extends AbstractHead {
 			this.expectedCharacter = c;
 		}
 
+		@Override
 		public final boolean matches(char c) {
 			return this.expectedCharacter == c;
 		}
@@ -219,8 +226,9 @@ final class GroupHead extends AbstractHead {
 	private static final class PunctPattern implements CharacterPattern {
 		static final GroupHead.PunctPattern INSTANCE = new PunctPattern();
 
-		private static String punctCharacters = "-!\"#$%&'()*+,./:;<=>?@[\\]_`{|}~";
+		private static String punctCharacters = "-!\"#$%&'()*+,./:;<=>?@[\\]_`{|}~"; //$NON-NLS-1$
 
+		@Override
 		public boolean matches(char c) {
 			return punctCharacters.indexOf(c) != -1;
 		}

@@ -325,7 +325,7 @@ public final class AbbreviatedObjectId implements Serializable {
 		return NB.compareUInt32(w5, mask(5, bs[p + 4]));
 	}
 
-	/** @return value for a fan-out style map, only valid of length >= 2. */
+	/** @return value for a fan-out style map, only valid of length &gt;= 2. */
 	public final int getFirstByte() {
 		return w1 >>> 24;
 	}
@@ -375,8 +375,9 @@ public final class AbbreviatedObjectId implements Serializable {
 		return new String(b, 0, nibbles);
 	}
 
+	@SuppressWarnings("nls")
 	@Override
 	public String toString() {
-		return "AbbreviatedObjectId[" + name() + "]";
+		return "AbbreviatedObjectId[" + name() + "]"; //$NON-NLS-1$
 	}
 }

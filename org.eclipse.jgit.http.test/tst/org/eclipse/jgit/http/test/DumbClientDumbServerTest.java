@@ -55,11 +55,14 @@ import static org.junit.Assert.fail;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
 import org.eclipse.jetty.servlet.DefaultServlet;
 import org.eclipse.jetty.servlet.ServletContextHandler;
+import org.eclipse.jetty.servlet.ServletHolder;
 import org.eclipse.jgit.errors.NotSupportedException;
 import org.eclipse.jgit.junit.TestRepository;
 import org.eclipse.jgit.junit.http.AccessEvent;
@@ -75,9 +78,16 @@ import org.eclipse.jgit.transport.HttpTransport;
 import org.eclipse.jgit.transport.Transport;
 import org.eclipse.jgit.transport.TransportHttp;
 import org.eclipse.jgit.transport.URIish;
+import org.eclipse.jgit.transport.http.HttpConnectionFactory;
+import org.eclipse.jgit.transport.http.JDKHttpConnectionFactory;
+import org.eclipse.jgit.transport.http.apache.HttpClientConnectionFactory;
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
+import org.junit.runners.Parameterized.Parameters;
 
+@RunWith(Parameterized.class)
 public class DumbClientDumbServerTest extends HttpTestCase {
 	private Repository remoteRepository;
 
@@ -87,18 +97,32 @@ public class DumbClientDumbServerTest extends HttpTestCase {
 
 	private RevCommit A, B;
 
+	@Parameters
+	public static Collection<Object[]> data() {
+		// run all tests with both connection factories we have
+		return Arrays.asList(new Object[][] {
+				{ new JDKHttpConnectionFactory() },
+				{ new HttpClientConnectionFactory() } });
+	}
+
+	public DumbClientDumbServerTest(HttpConnectionFactory cf) {
+		HttpTransport.setConnectionFactory(cf);
+	}
+
+	@Override
 	@Before
 	public void setUp() throws Exception {
 		super.setUp();
 
-		final TestRepository src = createTestRepository();
+		final TestRepository<Repository> src = createTestRepository();
 		final File srcGit = src.getRepository().getDirectory();
 		final URI base = srcGit.getParentFile().toURI();
 
 		ServletContextHandler app = server.addContext("/git");
 		app.setResourceBase(base.toString());
-		app.addServlet(DefaultServlet.class, "/");
-
+		ServletHolder holder = app.addServlet(DefaultServlet.class, "/");
+		// The tmp directory is symlinked on OS X
+		holder.setInitParameter("aliases", "true");
 		server.setUp();
 
 		remoteRepository = src.getRepository();
@@ -117,8 +141,7 @@ public class DumbClientDumbServerTest extends HttpTestCase {
 		assertEquals("http", remoteURI.getScheme());
 
 		Map<String, Ref> map;
-		Transport t = Transport.open(dst, remoteURI);
-		try {
+		try (Transport t = Transport.open(dst, remoteURI)) {
 			// I didn't make up these public interface names, I just
 			// approved them for inclusion into the code base. Sorry.
 			// --spearce
@@ -126,14 +149,9 @@ public class DumbClientDumbServerTest extends HttpTestCase {
 			assertTrue("isa TransportHttp", t instanceof TransportHttp);
 			assertTrue("isa HttpTransport", t instanceof HttpTransport);
 
-			FetchConnection c = t.openFetch();
-			try {
+			try (FetchConnection c = t.openFetch()) {
 				map = c.getRefsMap();
-			} finally {
-				c.close();
 			}
-		} finally {
-			t.close();
 		}
 
 		assertNotNull("have map of refs", map);
@@ -178,15 +196,12 @@ public class DumbClientDumbServerTest extends HttpTestCase {
 		Repository dst = createBareRepository();
 		assertFalse(dst.hasObject(A_txt));
 
-		Transport t = Transport.open(dst, remoteURI);
-		try {
+		try (Transport t = Transport.open(dst, remoteURI)) {
 			t.fetch(NullProgressMonitor.INSTANCE, mirror(master));
-		} finally {
-			t.close();
 		}
 
 		assertTrue(dst.hasObject(A_txt));
-		assertEquals(B, dst.getRef(master).getObjectId());
+		assertEquals(B, dst.exactRef(master).getObjectId());
 		fsck(dst, B);
 
 		List<AccessEvent> loose = getRequests(loose(remoteURI, A_txt));
@@ -198,20 +213,17 @@ public class DumbClientDumbServerTest extends HttpTestCase {
 
 	@Test
 	public void testInitialClone_Packed() throws Exception {
-		new TestRepository(remoteRepository).packAndPrune();
+		new TestRepository<>(remoteRepository).packAndPrune();
 
 		Repository dst = createBareRepository();
 		assertFalse(dst.hasObject(A_txt));
 
-		Transport t = Transport.open(dst, remoteURI);
-		try {
+		try (Transport t = Transport.open(dst, remoteURI)) {
 			t.fetch(NullProgressMonitor.INSTANCE, mirror(master));
-		} finally {
-			t.close();
 		}
 
 		assertTrue(dst.hasObject(A_txt));
-		assertEquals(B, dst.getRef(master).getObjectId());
+		assertEquals(B, dst.exactRef(master).getObjectId());
 		fsck(dst, B);
 
 		List<AccessEvent> req;
@@ -242,8 +254,7 @@ public class DumbClientDumbServerTest extends HttpTestCase {
 		final RevCommit Q = src.commit().create();
 		final Repository db = src.getRepository();
 
-		Transport t = Transport.open(db, remoteURI);
-		try {
+		try (Transport t = Transport.open(db, remoteURI)) {
 			try {
 				t.push(NullProgressMonitor.INSTANCE, push(src, Q));
 				fail("push incorrectly completed against a dumb server");
@@ -251,8 +262,6 @@ public class DumbClientDumbServerTest extends HttpTestCase {
 				String exp = "remote does not support smart HTTP push";
 				assertEquals(exp, nse.getMessage());
 			}
-		} finally {
-			t.close();
 		}
 	}
 }

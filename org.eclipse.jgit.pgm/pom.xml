@@ -50,7 +50,7 @@
   <parent>
     <groupId>org.eclipse.jgit</groupId>
     <artifactId>org.eclipse.jgit-parent</artifactId>
-    <version>2.1.0-SNAPSHOT</version>
+    <version>4.7.8-SNAPSHOT</version>
   </parent>
 
   <artifactId>org.eclipse.jgit.pgm</artifactId>
@@ -72,14 +72,19 @@
     </dependency>
 
     <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-compress</artifactId>
+    </dependency>
+
+    <dependency>
       <groupId>org.eclipse.jgit</groupId>
-      <artifactId>org.eclipse.jgit</artifactId>
+      <artifactId>org.eclipse.jgit.archive</artifactId>
       <version>${project.version}</version>
     </dependency>
 
     <dependency>
       <groupId>org.eclipse.jgit</groupId>
-      <artifactId>org.eclipse.jgit.iplog</artifactId>
+      <artifactId>org.eclipse.jgit</artifactId>
       <version>${project.version}</version>
     </dependency>
 
@@ -88,23 +93,53 @@
       <artifactId>org.eclipse.jgit.ui</artifactId>
       <version>${project.version}</version>
     </dependency>
-  </dependencies>
 
-  <profiles>
-    <profile>
-      <id>java6</id>
-      <activation>
-        <activeByDefault>true</activeByDefault>
-      </activation>
-      <dependencies>
-        <dependency>
-          <groupId>org.eclipse.jgit</groupId>
-          <artifactId>org.eclipse.jgit.console</artifactId>
-          <version>${project.version}</version>
-        </dependency>
-      </dependencies>
-    </profile>
-  </profiles>
+    <dependency>
+      <groupId>org.eclipse.jgit</groupId>
+      <artifactId>org.eclipse.jgit.http.apache</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.httpcomponents</groupId>
+      <artifactId>httpclient</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>${slf4j-version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-log4j12</artifactId>
+      <version>${slf4j-version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>log4j</groupId>
+      <artifactId>log4j</artifactId>
+      <version>${log4j-version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.eclipse.jetty</groupId>
+      <artifactId>jetty-servlet</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.eclipse.jgit</groupId>
+      <artifactId>org.eclipse.jgit.lfs</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.eclipse.jgit</groupId>
+      <artifactId>org.eclipse.jgit.lfs.server</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+  </dependencies>
 
   <build>
     <sourceDirectory>src/</sourceDirectory>
@@ -154,6 +189,20 @@
                   </manifestEntries>
                 </transformer>
               </transformers>
+              <filters>
+                <!-- exclude the signing data for individual jars, ueberjar will be signed again -->
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                    <exclude>OSGI-OPT/**</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+              <shadedArtifactAttached>true</shadedArtifactAttached>
+              <shadedClassifierName>shaded</shadedClassifierName> <!-- Any name that makes sense -->
             </configuration>
           </execution>
         </executions>
@@ -167,13 +216,13 @@
             <id>create_jgit</id>
             <phase>package</phase>
             <configuration>
-              <tasks>
+              <target>
                 <concat destfile="${basedir}/target/jgit" force="yes" binary="true">
                   <fileset file="${basedir}/jgit.sh" />
                   <fileset file="${basedir}/target/jgit-cli.jar" />
                 </concat>
                 <chmod file="${basedir}/target/jgit" perm="a+x"/>
-              </tasks>
+              </target>
             </configuration>
             <goals>
               <goal>run</goal>
@@ -183,12 +232,12 @@
             <id>translate-source-qualifier</id>
             <phase>generate-resources</phase>
             <configuration>
-              <tasks>
+              <target>
                 <copy file="META-INF/SOURCE-MANIFEST.MF" tofile="${source-bundle-manifest}" overwrite="true"/>
                 <replace file="${source-bundle-manifest}">
                   <replacefilter token=".qualifier" value=".${maven.build.timestamp}"/>
                 </replace>
-              </tasks>
+              </target>
             </configuration>
             <goals>
               <goal>run</goal>

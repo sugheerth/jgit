@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2011, Christian Halstrick <christian.halstrick@sap.com>
+ * Copyright (C) 2011, 2013 Christian Halstrick <christian.halstrick@sap.com>
  * and other copyright owners as documented in the project's IP log.
  *
  * This program and the accompanying materials are made available
@@ -43,9 +43,12 @@
 package org.eclipse.jgit.api;
 
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 import org.eclipse.jgit.lib.IndexDiff;
+import org.eclipse.jgit.lib.IndexDiff.StageState;
 
 /**
  * A class telling where the working-tree, the index and the current HEAD differ
@@ -64,19 +67,22 @@ public class Status {
 
 	private final boolean clean;
 
+	private final boolean hasUncommittedChanges;
+
 	/**
 	 * @param diff
 	 */
 	public Status(IndexDiff diff) {
 		super();
 		this.diff = diff;
-		clean = diff.getAdded().isEmpty() //
-				&& diff.getChanged().isEmpty() //
-				&& diff.getRemoved().isEmpty() //
-				&& diff.getMissing().isEmpty() //
-				&& diff.getModified().isEmpty() //
-				&& diff.getUntracked().isEmpty() //
-				&& diff.getConflicting().isEmpty();
+		hasUncommittedChanges = !diff.getAdded().isEmpty() //
+				|| !diff.getChanged().isEmpty() //
+				|| !diff.getRemoved().isEmpty() //
+				|| !diff.getMissing().isEmpty() //
+				|| !diff.getModified().isEmpty() //
+				|| !diff.getConflicting().isEmpty();
+		clean = !hasUncommittedChanges //
+				&& diff.getUntracked().isEmpty();
 	}
 
 	/**
@@ -85,6 +91,15 @@ public class Status {
 	 */
 	public boolean isClean() {
 		return clean;
+	}
+
+	/**
+	 * @return true if any tracked file is changed
+	 *
+	 * @since 3.2
+	 */
+	public boolean hasUncommittedChanges() {
+		return hasUncommittedChanges;
 	}
 
 	/**
@@ -138,10 +153,49 @@ public class Status {
 	}
 
 	/**
+	 * @return set of directories that are not ignored, and not in the index.
+	 */
+	public Set<String> getUntrackedFolders() {
+		return Collections.unmodifiableSet(diff.getUntrackedFolders());
+	}
+
+	/**
 	 * @return list of files that are in conflict. (e.g what you get if you
 	 *         modify file that was modified by someone else in the meantime)
 	 */
 	public Set<String> getConflicting() {
 		return Collections.unmodifiableSet(diff.getConflicting());
+	}
+
+	/**
+	 * @return a map from conflicting path to its {@link StageState}.
+	 * @since 3.0
+	 */
+	public Map<String, StageState> getConflictingStageState() {
+		return Collections.unmodifiableMap(diff.getConflictingStageStates());
+	}
+
+	/**
+	 * @return set of files and folders that are ignored and not in the index.
+	 */
+	public Set<String> getIgnoredNotInIndex() {
+		return Collections.unmodifiableSet(diff.getIgnoredNotInIndex());
+	}
+
+	/**
+	 * @return set of files and folders that are known to the repo and changed
+	 *         either in the index or in the working tree.
+	 *
+	 * @since 3.2
+	 */
+	public Set<String> getUncommittedChanges() {
+		Set<String> uncommittedChanges = new HashSet<>();
+		uncommittedChanges.addAll(diff.getAdded());
+		uncommittedChanges.addAll(diff.getChanged());
+		uncommittedChanges.addAll(diff.getRemoved());
+		uncommittedChanges.addAll(diff.getMissing());
+		uncommittedChanges.addAll(diff.getModified());
+		uncommittedChanges.addAll(diff.getConflicting());
+		return uncommittedChanges;
 	}
 }

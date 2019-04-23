@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2010, Google Inc.
+ * Copyright (C) 2010, 2013 Google Inc.
  * and other copyright owners as documented in the project's IP log.
  *
  * This program and the accompanying materials are made available
@@ -44,8 +44,15 @@
 package org.eclipse.jgit.lib;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+import org.eclipse.jgit.annotations.NonNull;
+import org.eclipse.jgit.annotations.Nullable;
 
 /**
  * Abstraction of name to {@link ObjectId} mapping.
@@ -75,8 +82,10 @@ public abstract class RefDatabase {
 	 * <p>
 	 * If the reference is nested deeper than this depth, the implementation
 	 * should either fail, or at least claim the reference does not exist.
+	 *
+	 * @since 4.2
 	 */
-	protected static final int MAX_SYMBOLIC_REF_DEPTH = 5;
+	public static final int MAX_SYMBOLIC_REF_DEPTH = 5;
 
 	/** Magic value for {@link #getRefs(String)} to return all references. */
 	public static final String ALL = "";//$NON-NLS-1$
@@ -111,8 +120,45 @@ public abstract class RefDatabase {
 	 *         using this name right now would be safe.
 	 * @throws IOException
 	 *             the database could not be read to check for conflicts.
+	 * @see #getConflictingNames(String)
 	 */
 	public abstract boolean isNameConflicting(String name) throws IOException;
+
+	/**
+	 * Determine if a proposed reference cannot coexist with existing ones. If
+	 * the passed name already exists, it's not considered a conflict.
+	 *
+	 * @param name
+	 *            proposed name to check for conflicts against
+	 * @return a collection of full names of existing refs which would conflict
+	 *         with the passed ref name; empty collection when there are no
+	 *         conflicts
+	 * @throws IOException
+	 * @since 2.3
+	 * @see #isNameConflicting(String)
+	 */
+	@NonNull
+	public Collection<String> getConflictingNames(String name)
+			throws IOException {
+		Map<String, Ref> allRefs = getRefs(ALL);
+		// Cannot be nested within an existing reference.
+		int lastSlash = name.lastIndexOf('/');
+		while (0 < lastSlash) {
+			String needle = name.substring(0, lastSlash);
+			if (allRefs.containsKey(needle))
+				return Collections.singletonList(needle);
+			lastSlash = name.lastIndexOf('/', lastSlash - 1);
+		}
+
+		List<String> conflicting = new ArrayList<>();
+		// Cannot be the container of an existing reference.
+		String prefix = name + '/';
+		for (String existing : allRefs.keySet())
+			if (existing.startsWith(prefix))
+				conflicting.add(existing);
+
+		return conflicting;
+	}
 
 	/**
 	 * Create a new update command to create, modify or delete a reference.
@@ -129,6 +175,7 @@ public abstract class RefDatabase {
 	 * @throws IOException
 	 *             the reference space cannot be accessed.
 	 */
+	@NonNull
 	public abstract RefUpdate newUpdate(String name, boolean detach)
 			throws IOException;
 
@@ -143,6 +190,7 @@ public abstract class RefDatabase {
 	 * @throws IOException
 	 *             the reference space cannot be accessed.
 	 */
+	@NonNull
 	public abstract RefRename newRename(String fromName, String toName)
 			throws IOException;
 
@@ -153,8 +201,35 @@ public abstract class RefDatabase {
 	 *
 	 * @return a new batch update object.
 	 */
+	@NonNull
 	public BatchRefUpdate newBatchUpdate() {
 		return new BatchRefUpdate(this);
+	}
+
+	/**
+	 * Whether the database is capable of performing batch updates as atomic
+	 * transactions.
+	 * <p>
+	 * If true, by default {@link BatchRefUpdate} instances will perform updates
+	 * atomically, meaning either all updates will succeed, or all updates will
+	 * fail. It is still possible to turn off this behavior on a per-batch basis
+	 * by calling {@code update.setAtomic(false)}.
+	 * <p>
+	 * If false, {@link BatchRefUpdate} instances will never perform updates
+	 * atomically, and calling {@code update.setAtomic(true)} will cause the
+	 * entire batch to fail with {@code REJECTED_OTHER_REASON}.
+	 * <p>
+	 * This definition of atomicity is stronger than what is provided by
+	 * {@link org.eclipse.jgit.transport.ReceivePack}. {@code ReceivePack} will
+	 * attempt to reject all commands if it knows in advance some commands may
+	 * fail, even if the storage layer does not support atomic transactions. Here,
+	 * atomicity applies even in the case of unforeseeable errors.
+	 *
+	 * @return whether transactions are atomic by default.
+	 * @since 3.6
+	 */
+	public boolean performsAtomicTransactions() {
+		return false;
 	}
 
 	/**
@@ -163,6 +238,9 @@ public abstract class RefDatabase {
 	 * Aside from taking advantage of {@link #SEARCH_PATH}, this method may be
 	 * able to more quickly resolve a single reference name than obtaining the
 	 * complete namespace by {@code getRefs(ALL).get(name)}.
+	 * <p>
+	 * To read a specific reference without using @{link #SEARCH_PATH}, see
+	 * {@link #exactRef(String)}.
 	 *
 	 * @param name
 	 *            the name of the reference. May be a short name which must be
@@ -171,7 +249,81 @@ public abstract class RefDatabase {
 	 * @throws IOException
 	 *             the reference space cannot be accessed.
 	 */
+	@Nullable
 	public abstract Ref getRef(String name) throws IOException;
+
+	/**
+	 * Read a single reference.
+	 * <p>
+	 * Unlike {@link #getRef}, this method expects an unshortened reference
+	 * name and does not search using the standard {@link #SEARCH_PATH}.
+	 *
+	 * @param name
+	 *             the unabbreviated name of the reference.
+	 * @return the reference (if it exists); else {@code null}.
+	 * @throws IOException
+	 *             the reference space cannot be accessed.
+	 * @since 4.1
+	 */
+	@Nullable
+	public Ref exactRef(String name) throws IOException {
+		Ref ref = getRef(name);
+		if (ref == null || !name.equals(ref.getName())) {
+			return null;
+		}
+		return ref;
+	}
+
+	/**
+	 * Read the specified references.
+	 * <p>
+	 * This method expects a list of unshortened reference names and returns
+	 * a map from reference names to refs.  Any named references that do not
+	 * exist will not be included in the returned map.
+	 *
+	 * @param refs
+	 *             the unabbreviated names of references to look up.
+	 * @return modifiable map describing any refs that exist among the ref
+	 *         ref names supplied. The map can be an unsorted map.
+	 * @throws IOException
+	 *             the reference space cannot be accessed.
+	 * @since 4.1
+	 */
+	@NonNull
+	public Map<String, Ref> exactRef(String... refs) throws IOException {
+		Map<String, Ref> result = new HashMap<>(refs.length);
+		for (String name : refs) {
+			Ref ref = exactRef(name);
+			if (ref != null) {
+				result.put(name, ref);
+			}
+		}
+		return result;
+	}
+
+	/**
+	 * Find the first named reference.
+	 * <p>
+	 * This method expects a list of unshortened reference names and returns
+	 * the first that exists.
+	 *
+	 * @param refs
+	 *             the unabbreviated names of references to look up.
+	 * @return the first named reference that exists (if any); else {@code null}.
+	 * @throws IOException
+	 *             the reference space cannot be accessed.
+	 * @since 4.1
+	 */
+	@Nullable
+	public Ref firstExactRef(String... refs) throws IOException {
+		for (String name : refs) {
+			Ref ref = exactRef(name);
+			if (ref != null) {
+				return ref;
+			}
+		}
+		return null;
+	}
 
 	/**
 	 * Get a section of the reference namespace.
@@ -186,6 +338,7 @@ public abstract class RefDatabase {
 	 * @throws IOException
 	 *             the reference space cannot be accessed.
 	 */
+	@NonNull
 	public abstract Map<String, Ref> getRefs(String prefix) throws IOException;
 
 	/**
@@ -194,11 +347,13 @@ public abstract class RefDatabase {
 	 * The result list includes non-ref items such as MERGE_HEAD and
 	 * FETCH_RESULT cast to be refs. The names of these refs are not returned by
 	 * <code>getRefs(ALL)</code> but are accepted by {@link #getRef(String)}
+	 * and {@link #exactRef(String)}.
 	 *
 	 * @return a list of additional refs
 	 * @throws IOException
 	 *             the reference space cannot be accessed.
 	 */
+	@NonNull
 	public abstract List<Ref> getAdditionalRefs() throws IOException;
 
 	/**
@@ -215,10 +370,11 @@ public abstract class RefDatabase {
 	 * @return {@code ref} if {@code ref.isPeeled()} is true; otherwise a new
 	 *         Ref object representing the same data as Ref, but isPeeled() will
 	 *         be true and getPeeledObjectId() will contain the peeled object
-	 *         (or null).
+	 *         (or {@code null}).
 	 * @throws IOException
 	 *             the reference space or object space cannot be accessed.
 	 */
+	@NonNull
 	public abstract Ref peel(Ref ref) throws IOException;
 
 	/**
@@ -231,5 +387,28 @@ public abstract class RefDatabase {
 	 */
 	public void refresh() {
 		// nothing
+	}
+
+	/**
+	 * Try to find the specified name in the ref map using {@link #SEARCH_PATH}.
+	 *
+	 * @param map
+	 *            map of refs to search within. Names should be fully qualified,
+	 *            e.g. "refs/heads/master".
+	 * @param name
+	 *            short name of ref to find, e.g. "master" to find
+	 *            "refs/heads/master" in map.
+	 * @return The first ref matching the name, or {@code null} if not found.
+	 * @since 3.4
+	 */
+	@Nullable
+	public static Ref findRef(Map<String, Ref> map, String name) {
+		for (String prefix : SEARCH_PATH) {
+			String fullname = prefix + name;
+			Ref ref = map.get(fullname);
+			if (ref != null)
+				return ref;
+		}
+		return null;
 	}
 }

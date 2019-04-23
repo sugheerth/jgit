@@ -47,17 +47,17 @@ package org.eclipse.jgit.pgm.opt;
 import java.io.IOException;
 import java.text.MessageFormat;
 
+import org.eclipse.jgit.errors.IncorrectObjectTypeException;
+import org.eclipse.jgit.errors.MissingObjectException;
+import org.eclipse.jgit.lib.ObjectId;
+import org.eclipse.jgit.pgm.internal.CLIText;
+import org.eclipse.jgit.revwalk.RevTree;
 import org.kohsuke.args4j.CmdLineException;
 import org.kohsuke.args4j.CmdLineParser;
 import org.kohsuke.args4j.OptionDef;
 import org.kohsuke.args4j.spi.OptionHandler;
 import org.kohsuke.args4j.spi.Parameters;
 import org.kohsuke.args4j.spi.Setter;
-import org.eclipse.jgit.errors.IncorrectObjectTypeException;
-import org.eclipse.jgit.errors.MissingObjectException;
-import org.eclipse.jgit.lib.ObjectId;
-import org.eclipse.jgit.pgm.CLIText;
-import org.eclipse.jgit.revwalk.RevTree;
 
 /**
  * Custom argument handler {@link RevTree} from string values.
@@ -89,20 +89,20 @@ public class RevTreeHandler extends OptionHandler<RevTree> {
 		try {
 			id = clp.getRepository().resolve(name);
 		} catch (IOException e) {
-			throw new CmdLineException(e.getMessage());
+			throw new CmdLineException(clp, e.getMessage());
 		}
 		if (id == null)
-			throw new CmdLineException(MessageFormat.format(CLIText.get().notATree, name));
+			throw new CmdLineException(clp, MessageFormat.format(CLIText.get().notATree, name));
 
 		final RevTree c;
 		try {
 			c = clp.getRevWalk().parseTree(id);
 		} catch (MissingObjectException e) {
-			throw new CmdLineException(MessageFormat.format(CLIText.get().notATree, name));
+			throw new CmdLineException(clp, MessageFormat.format(CLIText.get().notATree, name));
 		} catch (IncorrectObjectTypeException e) {
-			throw new CmdLineException(MessageFormat.format(CLIText.get().notATree, name));
+			throw new CmdLineException(clp, MessageFormat.format(CLIText.get().notATree, name));
 		} catch (IOException e) {
-			throw new CmdLineException(MessageFormat.format(CLIText.get().cannotReadBecause, name, e.getMessage()));
+			throw new CmdLineException(clp, MessageFormat.format(CLIText.get().cannotReadBecause, name, e.getMessage()));
 		}
 		setter.addValue(c);
 		return 1;

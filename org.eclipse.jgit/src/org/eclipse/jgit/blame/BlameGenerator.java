@@ -44,11 +44,14 @@
 package org.eclipse.jgit.blame;
 
 import static org.eclipse.jgit.lib.Constants.OBJ_BLOB;
+import static org.eclipse.jgit.lib.FileMode.TYPE_FILE;
+import static org.eclipse.jgit.lib.FileMode.TYPE_MASK;
 
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Collections;
 
+import org.eclipse.jgit.annotations.Nullable;
 import org.eclipse.jgit.blame.Candidate.BlobCandidate;
 import org.eclipse.jgit.blame.Candidate.ReverseCandidate;
 import org.eclipse.jgit.blame.ReverseWalk.ReverseCommit;
@@ -76,7 +79,7 @@ import org.eclipse.jgit.treewalk.filter.PathFilter;
 import org.eclipse.jgit.treewalk.filter.TreeFilter;
 
 /**
- * Generate author information for lines based on introduction to the file.
+ * Generate author information for lines based on a provided file.
  * <p>
  * Applications that want a simple one-shot computation of blame for a file
  * should use {@link #computeBlameResult()} to prepare the entire result in one
@@ -111,7 +114,7 @@ import org.eclipse.jgit.treewalk.filter.TreeFilter;
  * the ancestor, until there are no more lines to acquire information on, or the
  * file's creation point is discovered in history.
  */
-public class BlameGenerator {
+public class BlameGenerator implements AutoCloseable {
 	private final Repository repository;
 
 	private final PathFilter resultPath;
@@ -121,7 +124,7 @@ public class BlameGenerator {
 	/** Revision pool used to acquire commits from. */
 	private RevWalk revPool;
 
-	/** Indicates the commit has already been processed. */
+	/** Indicates the commit was put into the queue at least once. */
 	private RevFlag SEEN;
 
 	private ObjectReader reader;
@@ -141,15 +144,18 @@ public class BlameGenerator {
 	private int remaining;
 
 	/** Blame is currently assigned to this source. */
-	private Candidate currentSource;
+	private Candidate outCandidate;
+	private Region outRegion;
 
 	/**
-	 * Create a blame generator for the repository and path
+	 * Create a blame generator for the repository and path (relative to
+	 * repository)
 	 *
 	 * @param repository
 	 *            repository to access revision data from.
 	 * @param path
-	 *            initial path of the file to start scanning.
+	 *            initial path of the file to start scanning (relative to the
+	 *            repository).
 	 */
 	public BlameGenerator(Repository repository, String path) {
 		this.repository = repository;
@@ -167,15 +173,14 @@ public class BlameGenerator {
 			throw new IllegalStateException();
 
 		if (revPool != null)
-			revPool.release();
+			revPool.close();
 
 		if (reverse)
 			revPool = new ReverseWalk(getRepository());
 		else
 			revPool = new RevWalk(getRepository());
 
-		revPool.setRetainBody(true);
-		SEEN = revPool.newFlag("SEEN");
+		SEEN = revPool.newFlag("SEEN"); //$NON-NLS-1$
 		reader = revPool.getObjectReader();
 		treeWalk = new TreeWalk(reader);
 		treeWalk.setRecursive(true);
@@ -234,11 +239,13 @@ public class BlameGenerator {
 	}
 
 	/**
-	 * Obtain the RenameDetector if {@code setFollowFileRenames(true)}.
+	 * Obtain the RenameDetector, allowing the application to configure its
+	 * settings for rename score and breaking behavior.
 	 *
-	 * @return the rename detector, allowing the application to configure its
-	 *         settings for rename score and breaking behavior.
+	 * @return the rename detector, or {@code null} if
+	 *         {@code setFollowFileRenames(false)}.
 	 */
+	@Nullable
 	public RenameDetector getRenameDetector() {
 		return renameDetector;
 	}
@@ -421,6 +428,18 @@ public class BlameGenerator {
 	}
 
 	/**
+	 * Allocate a new RevFlag for use by the caller.
+	 *
+	 * @param name
+	 *            unique name of the flag in the blame context.
+	 * @return the newly allocated flag.
+	 * @since 3.4
+	 */
+	public RevFlag newFlag(String name) {
+		return revPool.newFlag(name);
+	}
+
+	/**
 	 * Execute the generator in a blocking fashion until all data is ready.
 	 *
 	 * @return the complete result. Null if no file exists for the given path.
@@ -434,7 +453,7 @@ public class BlameGenerator {
 				r.computeAll();
 			return r;
 		} finally {
-			release();
+			close();
 		}
 	}
 
@@ -450,19 +469,19 @@ public class BlameGenerator {
 	 */
 	public boolean next() throws IOException {
 		// If there is a source still pending, produce the next region.
-		if (currentSource != null) {
-			Region r = currentSource.regionList;
-			Region n = r.next;
+		if (outRegion != null) {
+			Region r = outRegion;
 			remaining -= r.length;
-			if (n != null) {
-				currentSource.regionList = n;
+			if (r.next != null) {
+				outRegion = r.next;
 				return true;
 			}
 
-			if (currentSource.queueNext != null)
-				return result(currentSource.queueNext);
+			if (outCandidate.queueNext != null)
+				return result(outCandidate.queueNext);
 
-			currentSource = null;
+			outCandidate = null;
+			outRegion = null;
 		}
 
 		// If there are no lines remaining, the entire result is done,
@@ -497,14 +516,14 @@ public class BlameGenerator {
 	}
 
 	private boolean done() {
-		release();
+		close();
 		return false;
 	}
 
 	private boolean result(Candidate n) throws IOException {
-		if (n.sourceCommit != null)
-			revPool.parseBody(n.sourceCommit);
-		currentSource = n;
+		n.beginResult(revPool);
+		outCandidate = n;
+		outRegion = n.regionList;
 		return true;
 	}
 
@@ -530,6 +549,7 @@ public class BlameGenerator {
 	private void push(BlobCandidate toInsert) {
 		Candidate c = queue;
 		if (c != null) {
+			c.remove(SEEN); // will be pushed by toInsert
 			c.regionList = null;
 			toInsert.parent = c;
 		}
@@ -537,8 +557,24 @@ public class BlameGenerator {
 	}
 
 	private void push(Candidate toInsert) {
-		// Mark sources to ensure they get discarded (above) if
-		// another path to the same commit.
+		if (toInsert.has(SEEN)) {
+			// We have already added a Candidate for this commit to the queue,
+			// this can happen if the commit is a merge base for two or more
+			// parallel branches that were merged together.
+			//
+			// It is likely the candidate was not yet processed. The queue
+			// sorts descending by commit time and usually descendant commits
+			// have higher timestamps than the ancestors.
+			//
+			// Find the existing candidate and merge the new candidate's
+			// region list into it.
+			for (Candidate p = queue; p != null; p = p.queueNext) {
+				if (p.canMergeRegions(toInsert)) {
+					p.mergeRegions(toInsert);
+					return;
+				}
+			}
+		}
 		toInsert.add(SEEN);
 
 		// Insert into the queue using descending commit time, so
@@ -565,23 +601,12 @@ public class BlameGenerator {
 		RevCommit parent = n.getParent(0);
 		if (parent == null)
 			return split(n.getNextCandidate(0), n);
-		if (parent.has(SEEN))
-			return false;
 		revPool.parseHeaders(parent);
 
 		if (find(parent, n.sourcePath)) {
-			if (idBuf.equals(n.sourceBlob)) {
-				// The common case of the file not being modified in
-				// a simple string-of-pearls history. Blame parent.
-				n.sourceCommit = parent;
-				push(n);
-				return false;
-			}
-
-			Candidate next = n.create(parent, n.sourcePath);
-			next.sourceBlob = idBuf.toObjectId();
-			next.loadText(reader);
-			return split(next, n);
+			if (idBuf.equals(n.sourceBlob))
+				return blameEntireRegionOnParent(n, parent);
+			return splitBlameWithParent(n, parent);
 		}
 
 		if (n.sourceCommit == null)
@@ -603,6 +628,21 @@ public class BlameGenerator {
 		Candidate next = n.create(parent, PathFilter.create(r.getOldPath()));
 		next.sourceBlob = r.getOldId().toObjectId();
 		next.renameScore = r.getScore();
+		next.loadText(reader);
+		return split(next, n);
+	}
+
+	private boolean blameEntireRegionOnParent(Candidate n, RevCommit parent) {
+		// File was not modified, blame parent.
+		n.sourceCommit = parent;
+		push(n);
+		return false;
+	}
+
+	private boolean splitBlameWithParent(Candidate n, RevCommit parent)
+			throws IOException {
+		Candidate next = n.create(parent, n.sourcePath);
+		next.sourceBlob = idBuf.toObjectId();
 		next.loadText(reader);
 		return split(next, n);
 	}
@@ -634,27 +674,16 @@ public class BlameGenerator {
 	private boolean processMerge(Candidate n) throws IOException {
 		int pCnt = n.getParentCount();
 
-		for (int pIdx = 0; pIdx < pCnt; pIdx++) {
-			RevCommit parent = n.getParent(pIdx);
-			if (parent.has(SEEN))
-				continue;
-			revPool.parseHeaders(parent);
-		}
-
 		// If any single parent exactly matches the merge, follow only
 		// that one parent through history.
 		ObjectId[] ids = null;
 		for (int pIdx = 0; pIdx < pCnt; pIdx++) {
 			RevCommit parent = n.getParent(pIdx);
-			if (parent.has(SEEN))
-				continue;
+			revPool.parseHeaders(parent);
 			if (!find(parent, n.sourcePath))
 				continue;
-			if (!(n instanceof ReverseCandidate) && idBuf.equals(n.sourceBlob)) {
-				n.sourceCommit = parent;
-				push(n);
-				return false;
-			}
+			if (!(n instanceof ReverseCandidate) && idBuf.equals(n.sourceBlob))
+				return blameEntireRegionOnParent(n, parent);
 			if (ids == null)
 				ids = new ObjectId[pCnt];
 			ids[pIdx] = idBuf.toObjectId();
@@ -666,8 +695,6 @@ public class BlameGenerator {
 			renames = new DiffEntry[pCnt];
 			for (int pIdx = 0; pIdx < pCnt; pIdx++) {
 				RevCommit parent = n.getParent(pIdx);
-				if (parent.has(SEEN))
-					continue;
 				if (ids != null && ids[pIdx] != null)
 					continue;
 
@@ -686,10 +713,8 @@ public class BlameGenerator {
 					// have an exact content match. For performance reasons
 					// we choose to follow the one parent over trying to do
 					// possibly both parents.
-					n.sourceCommit = parent;
 					n.sourcePath = PathFilter.create(r.getOldPath());
-					push(n);
-					return false;
+					return blameEntireRegionOnParent(n, parent);
 				}
 
 				renames[pIdx] = r;
@@ -700,8 +725,6 @@ public class BlameGenerator {
 		Candidate[] parents = new Candidate[pCnt];
 		for (int pIdx = 0; pIdx < pCnt; pIdx++) {
 			RevCommit parent = n.getParent(pIdx);
-			if (parent.has(SEEN))
-				continue;
 
 			Candidate p;
 			if (renames != null && renames[pIdx] != null) {
@@ -738,8 +761,9 @@ public class BlameGenerator {
 				}
 
 				p.regionList = n.regionList;
-				push(p);
-				return false;
+				n.regionList = null;
+				parents[pIdx] = p;
+				break;
 			}
 
 			p.takeBlame(editList, n);
@@ -815,12 +839,12 @@ public class BlameGenerator {
 	 * @return current revision being blamed.
 	 */
 	public RevCommit getSourceCommit() {
-		return currentSource.sourceCommit;
+		return outCandidate.sourceCommit;
 	}
 
 	/** @return current author being blamed. */
 	public PersonIdent getSourceAuthor() {
-		return currentSource.getAuthor();
+		return outCandidate.getAuthor();
 	}
 
 	/** @return current committer being blamed. */
@@ -831,12 +855,12 @@ public class BlameGenerator {
 
 	/** @return path of the file being blamed. */
 	public String getSourcePath() {
-		return currentSource.sourcePath.getPath();
+		return outCandidate.sourcePath.getPath();
 	}
 
 	/** @return rename score if a rename occurred in {@link #getSourceCommit}. */
 	public int getRenameScore() {
-		return currentSource.renameScore;
+		return outCandidate.renameScore;
 	}
 
 	/**
@@ -846,7 +870,7 @@ public class BlameGenerator {
 	 *         {@link #getSourcePath()}.
 	 */
 	public int getSourceStart() {
-		return currentSource.regionList.sourceStart;
+		return outRegion.sourceStart;
 	}
 
 	/**
@@ -856,7 +880,7 @@ public class BlameGenerator {
 	 *         {@link #getSourcePath()}.
 	 */
 	public int getSourceEnd() {
-		Region r = currentSource.regionList;
+		Region r = outRegion;
 		return r.sourceStart + r.length;
 	}
 
@@ -865,7 +889,7 @@ public class BlameGenerator {
 	 *         blamed for providing. Line numbers use 0 based indexing.
 	 */
 	public int getResultStart() {
-		return currentSource.regionList.resultStart;
+		return outRegion.resultStart;
 	}
 
 	/**
@@ -876,7 +900,7 @@ public class BlameGenerator {
 	 *         than {@link #getResultStart()}.
 	 */
 	public int getResultEnd() {
-		Region r = currentSource.regionList;
+		Region r = outRegion;
 		return r.resultStart + r.length;
 	}
 
@@ -887,7 +911,7 @@ public class BlameGenerator {
 	 *         {@code getSourceEnd() - getSourceStart()}.
 	 */
 	public int getRegionLength() {
-		return currentSource.regionList.length;
+		return outRegion.length;
 	}
 
 	/**
@@ -898,7 +922,7 @@ public class BlameGenerator {
 	 *         applications will want the result contents for display to users.
 	 */
 	public RawText getSourceContents() {
-		return currentSource.sourceText;
+		return outCandidate.sourceText;
 	}
 
 	/**
@@ -915,28 +939,31 @@ public class BlameGenerator {
 		return queue != null ? queue.sourceText : null;
 	}
 
-	/** Release the current blame session. */
-	public void release() {
-		revPool.release();
+	/**
+	 * Release the current blame session.
+	 *
+	 * @since 4.0
+	 */
+	@Override
+	public void close() {
+		revPool.close();
 		queue = null;
-		currentSource = null;
+		outCandidate = null;
+		outRegion = null;
 	}
 
 	private boolean find(RevCommit commit, PathFilter path) throws IOException {
 		treeWalk.setFilter(path);
 		treeWalk.reset(commit.getTree());
-		while (treeWalk.next()) {
-			if (path.isDone(treeWalk)) {
-				if (treeWalk.getFileMode(0).getObjectType() != OBJ_BLOB)
-					return false;
-				treeWalk.getObjectId(idBuf, 0);
-				return true;
-			}
-
-			if (treeWalk.isSubtree())
-				treeWalk.enterSubtree();
+		if (treeWalk.next() && isFile(treeWalk.getRawMode(0))) {
+			treeWalk.getObjectId(idBuf, 0);
+			return true;
 		}
 		return false;
+	}
+
+	private static final boolean isFile(int rawMode) {
+		return (rawMode & TYPE_MASK) == TYPE_FILE;
 	}
 
 	private DiffEntry findRename(RevCommit parent, RevCommit commit,

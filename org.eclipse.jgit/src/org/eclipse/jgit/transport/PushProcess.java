@@ -44,9 +44,12 @@
 package org.eclipse.jgit.transport;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.text.MessageFormat;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.eclipse.jgit.errors.MissingObjectException;
@@ -64,7 +67,7 @@ import org.eclipse.jgit.transport.RemoteRefUpdate.Status;
 /**
  * Class performing push operation on remote repository.
  *
- * @see Transport#push(ProgressMonitor, Collection)
+ * @see Transport#push(ProgressMonitor, Collection, OutputStream)
  */
 class PushProcess {
 	/** Task name for {@link ProgressMonitor} used during opening connection. */
@@ -82,6 +85,12 @@ class PushProcess {
 	/** Revision walker for checking some updates properties. */
 	private final RevWalk walker;
 
+	/** an outputstream to write messages to */
+	private final OutputStream out;
+
+	/** A list of option strings associated with this push */
+	private List<String> pushOptions;
+
 	/**
 	 * Create process for specified transport and refs updates specification.
 	 *
@@ -90,13 +99,34 @@ class PushProcess {
 	 *            connection.
 	 * @param toPush
 	 *            specification of refs updates (and local tracking branches).
+	 *
 	 * @throws TransportException
 	 */
 	PushProcess(final Transport transport,
 			final Collection<RemoteRefUpdate> toPush) throws TransportException {
+		this(transport, toPush, null);
+	}
+
+	/**
+	 * Create process for specified transport and refs updates specification.
+	 *
+	 * @param transport
+	 *            transport between remote and local repository, used to create
+	 *            connection.
+	 * @param toPush
+	 *            specification of refs updates (and local tracking branches).
+	 * @param out
+	 *            OutputStream to write messages to
+	 * @throws TransportException
+	 */
+	PushProcess(final Transport transport,
+			final Collection<RemoteRefUpdate> toPush, OutputStream out)
+			throws TransportException {
 		this.walker = new RevWalk(transport.local);
 		this.transport = transport;
-		this.toPush = new HashMap<String, RemoteRefUpdate>();
+		this.toPush = new HashMap<>();
+		this.out = out;
+		this.pushOptions = transport.getPushOptions();
 		for (final RemoteRefUpdate rru : toPush) {
 			if (this.toPush.put(rru.getRemoteName(), rru) != null)
 				throw new TransportException(MessageFormat.format(
@@ -131,6 +161,7 @@ class PushProcess {
 			try {
 				res.setAdvertisedRefs(transport.getURI(), connection
 						.getRefsMap());
+				res.peerUserAgent = connection.getPeerUserAgent();
 				res.setRemoteUpdates(toPush);
 				monitor.endTask();
 
@@ -138,7 +169,7 @@ class PushProcess {
 				if (transport.isDryRun())
 					modifyUpdatesForDryRun();
 				else if (!preprocessed.isEmpty())
-					connection.push(monitor, preprocessed);
+					connection.push(monitor, preprocessed, out);
 			} finally {
 				connection.close();
 				res.addMessages(connection.getMessages());
@@ -152,17 +183,23 @@ class PushProcess {
 			}
 			return res;
 		} finally {
-			walker.release();
+			walker.close();
 		}
 	}
 
 	private Map<String, RemoteRefUpdate> prepareRemoteUpdates()
 			throws TransportException {
-		final Map<String, RemoteRefUpdate> result = new HashMap<String, RemoteRefUpdate>();
+		boolean atomic = transport.isPushAtomic();
+		final Map<String, RemoteRefUpdate> result = new HashMap<>();
 		for (final RemoteRefUpdate rru : toPush.values()) {
 			final Ref advertisedRef = connection.getRef(rru.getRemoteName());
-			final ObjectId advertisedOld = (advertisedRef == null ? ObjectId
-					.zeroId() : advertisedRef.getObjectId());
+			ObjectId advertisedOld = null;
+			if (advertisedRef != null) {
+				advertisedOld = advertisedRef.getObjectId();
+			}
+			if (advertisedOld == null) {
+				advertisedOld = ObjectId.zeroId();
+			}
 
 			if (rru.getNewObjectId().equals(advertisedOld)) {
 				if (rru.isDelete()) {
@@ -180,7 +217,13 @@ class PushProcess {
 			if (rru.isExpectingOldObjectId()
 					&& !rru.getExpectedOldObjectId().equals(advertisedOld)) {
 				rru.setStatus(Status.REJECTED_REMOTE_CHANGED);
+				if (atomic) {
+					return rejectAll();
+				}
 				continue;
+			}
+			if (!rru.isExpectingOldObjectId()) {
+				rru.setExpectedOldObjectId(advertisedOld);
 			}
 
 			// create ref (hasn't existed on remote side) and delete ref
@@ -211,12 +254,26 @@ class PushProcess {
 						JGitText.get().readingObjectsFromLocalRepositoryFailed, x.getMessage()), x);
 			}
 			rru.setFastForward(fastForward);
-			if (!fastForward && !rru.isForceUpdate())
+			if (!fastForward && !rru.isForceUpdate()) {
 				rru.setStatus(Status.REJECTED_NONFASTFORWARD);
-			else
+				if (atomic) {
+					return rejectAll();
+				}
+			} else {
 				result.put(rru.getRemoteName(), rru);
+			}
 		}
 		return result;
+	}
+
+	private Map<String, RemoteRefUpdate> rejectAll() {
+		for (RemoteRefUpdate rru : toPush.values()) {
+			if (rru.getStatus() == Status.NOT_ATTEMPTED) {
+				rru.setStatus(RemoteRefUpdate.Status.REJECTED_OTHER_REASON);
+				rru.setMessage(JGitText.get().transactionAborted);
+			}
+		}
+		return Collections.emptyMap();
 	}
 
 	private void modifyUpdatesForDryRun() {
@@ -241,5 +298,15 @@ class PushProcess {
 				}
 			}
 		}
+	}
+
+	/**
+	 * Gets the list of option strings associated with this push.
+	 *
+	 * @return pushOptions
+	 * @since 4.5
+	 */
+	public List<String> getPushOptions() {
+		return pushOptions;
 	}
 }

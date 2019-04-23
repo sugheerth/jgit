@@ -51,8 +51,8 @@ import static org.junit.Assert.assertTrue;
 
 import java.util.Collections;
 
+import org.eclipse.jgit.junit.RepositoryTestCase;
 import org.eclipse.jgit.lib.FileMode;
-import org.eclipse.jgit.lib.RepositoryTestCase;
 import org.eclipse.jgit.treewalk.TreeWalk;
 import org.eclipse.jgit.treewalk.filter.PathFilterGroup;
 import org.junit.Test;
@@ -63,7 +63,7 @@ public class DirCacheBuilderIteratorTest extends RepositoryTestCase {
 		final DirCache dc = db.readDirCache();
 
 		final FileMode mode = FileMode.REGULAR_FILE;
-		final String[] paths = { "a.", "a/b", "a/c", "a/d", "a0b" };
+		final String[] paths = { "a-", "a/b", "a/c", "a/d", "a0b" };
 		final DirCacheEntry[] ents = new DirCacheEntry[paths.length];
 		for (int i = 0; i < paths.length; i++) {
 			ents[i] = new DirCacheEntry(paths[i]);
@@ -78,23 +78,24 @@ public class DirCacheBuilderIteratorTest extends RepositoryTestCase {
 
 		final int expIdx = 2;
 		final DirCacheBuilder b = dc.builder();
-		final TreeWalk tw = new TreeWalk(db);
-		tw.addTree(new DirCacheBuildIterator(b));
-		tw.setRecursive(true);
-		tw.setFilter(PathFilterGroup.createFromStrings(Collections
-				.singleton(paths[expIdx])));
+		try (final TreeWalk tw = new TreeWalk(db)) {
+			tw.addTree(new DirCacheBuildIterator(b));
+			tw.setRecursive(true);
+			tw.setFilter(PathFilterGroup.createFromStrings(Collections
+					.singleton(paths[expIdx])));
 
-		assertTrue("found " + paths[expIdx], tw.next());
-		final DirCacheIterator c = tw.getTree(0, DirCacheIterator.class);
-		assertNotNull(c);
-		assertEquals(expIdx, c.ptr);
-		assertSame(ents[expIdx], c.getDirCacheEntry());
-		assertEquals(paths[expIdx], tw.getPathString());
-		assertEquals(mode.getBits(), tw.getRawMode(0));
-		assertSame(mode, tw.getFileMode(0));
-		b.add(c.getDirCacheEntry());
+			assertTrue("found " + paths[expIdx], tw.next());
+			final DirCacheIterator c = tw.getTree(0, DirCacheIterator.class);
+			assertNotNull(c);
+			assertEquals(expIdx, c.ptr);
+			assertSame(ents[expIdx], c.getDirCacheEntry());
+			assertEquals(paths[expIdx], tw.getPathString());
+			assertEquals(mode.getBits(), tw.getRawMode(0));
+			assertSame(mode, tw.getFileMode(0));
+			b.add(c.getDirCacheEntry());
 
-		assertFalse("no more entries", tw.next());
+			assertFalse("no more entries", tw.next());
+		}
 
 		b.finish();
 		assertEquals(ents.length, dc.getEntryCount());

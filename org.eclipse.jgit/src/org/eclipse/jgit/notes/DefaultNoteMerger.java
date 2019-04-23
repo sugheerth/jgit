@@ -67,6 +67,7 @@ import org.eclipse.jgit.util.io.UnionInputStream;
  */
 public class DefaultNoteMerger implements NoteMerger {
 
+	@Override
 	public Note merge(Note base, Note ours, Note theirs, ObjectReader reader,
 			ObjectInserter inserter) throws IOException {
 		if (ours == null)
@@ -82,8 +83,12 @@ public class DefaultNoteMerger implements NoteMerger {
 		ObjectLoader lt = reader.open(theirs.getData());
 		UnionInputStream union = new UnionInputStream(lo.openStream(),
 				lt.openStream());
-		ObjectId noteData = inserter.insert(Constants.OBJ_BLOB,
-				lo.getSize() + lt.getSize(), union);
-		return new Note(ours, noteData);
+		try {
+			ObjectId noteData = inserter.insert(Constants.OBJ_BLOB,
+					lo.getSize() + lt.getSize(), union);
+			return new Note(ours, noteData);
+		} finally {
+			union.close();
+		}
 	}
 }

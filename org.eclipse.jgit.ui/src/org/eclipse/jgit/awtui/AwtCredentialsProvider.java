@@ -56,15 +56,20 @@ import javax.swing.JPasswordField;
 import javax.swing.JTextField;
 
 import org.eclipse.jgit.errors.UnsupportedCredentialItem;
+import org.eclipse.jgit.transport.ChainingCredentialsProvider;
 import org.eclipse.jgit.transport.CredentialItem;
 import org.eclipse.jgit.transport.CredentialsProvider;
+import org.eclipse.jgit.transport.NetRCCredentialsProvider;
 import org.eclipse.jgit.transport.URIish;
 
 /** Interacts with the user during authentication by using AWT/Swing dialogs. */
 public class AwtCredentialsProvider extends CredentialsProvider {
 	/** Install this implementation as the default. */
 	public static void install() {
-		CredentialsProvider.setDefault(new AwtCredentialsProvider());
+		final AwtCredentialsProvider c = new AwtCredentialsProvider();
+		CredentialsProvider cp = new ChainingCredentialsProvider(
+				new NetRCCredentialsProvider(), c);
+		CredentialsProvider.setDefault(cp);
 	}
 
 	@Override
@@ -135,7 +140,7 @@ public class AwtCredentialsProvider extends CredentialsProvider {
 		}
 	}
 
-	private boolean interactive(URIish uri, CredentialItem[] items) {
+	private static boolean interactive(URIish uri, CredentialItem[] items) {
 		final GridBagConstraints gbc = new GridBagConstraints(0, 0, 1, 1, 1, 1,
 				GridBagConstraints.NORTHWEST, GridBagConstraints.NONE,
 				new Insets(0, 0, 0, 0), 0, 0);

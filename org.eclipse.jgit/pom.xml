@@ -53,7 +53,7 @@
   <parent>
     <groupId>org.eclipse.jgit</groupId>
     <artifactId>org.eclipse.jgit-parent</artifactId>
-    <version>2.1.0-SNAPSHOT</version>
+    <version>4.7.8-SNAPSHOT</version>
   </parent>
 
   <artifactId>org.eclipse.jgit</artifactId>
@@ -73,6 +73,22 @@
       <groupId>com.jcraft</groupId>
       <artifactId>jsch</artifactId>
     </dependency>
+
+    <dependency>
+      <groupId>com.googlecode.javaewah</groupId>
+      <artifactId>JavaEWAH</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.httpcomponents</groupId>
+      <artifactId>httpclient</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+    </dependency>
+
   </dependencies>
 
   <build>
@@ -101,12 +117,12 @@
             <id>translate-source-qualifier</id>
             <phase>generate-resources</phase>
             <configuration>
-              <tasks>
+              <target>
                 <copy file="META-INF/SOURCE-MANIFEST.MF" tofile="${source-bundle-manifest}" overwrite="true"/>
                 <replace file="${source-bundle-manifest}">
                   <replacefilter token=".qualifier" value=".${maven.build.timestamp}"/>
                 </replace>
-              </tasks>
+              </target>
             </configuration>
             <goals>
               <goal>run</goal>
@@ -145,16 +161,53 @@
       </plugin>
 
       <plugin>
-        <groupId>org.codehaus.mojo</groupId>
-        <artifactId>clirr-maven-plugin</artifactId>
+          <groupId>com.github.siom79.japicmp</groupId>
+          <artifactId>japicmp-maven-plugin</artifactId>
+          <version>${japicmp-version}</version>
+          <configuration>
+              <oldVersion>
+                  <dependency>
+                      <groupId>${project.groupId}</groupId>
+                      <artifactId>${project.artifactId}</artifactId>
+                      <version>${jgit-last-release-version}</version>
+                  </dependency>
+              </oldVersion>
+              <newVersion>
+                  <file>
+                      <path>${project.build.directory}/${project.artifactId}-${project.version}.jar</path>
+                  </file>
+              </newVersion>
+              <parameter>
+                  <onlyModified>true</onlyModified>
+                  <includes>
+                      <include>org.eclipse.jgit.*</include>
+                  </includes>
+                  <accessModifier>public</accessModifier>
+                  <breakBuildOnModifications>false</breakBuildOnModifications>
+                  <breakBuildOnBinaryIncompatibleModifications>false</breakBuildOnBinaryIncompatibleModifications>
+                  <onlyBinaryIncompatible>false</onlyBinaryIncompatible>
+                  <includeSynthetic>false</includeSynthetic>
+                  <ignoreMissingClasses>false</ignoreMissingClasses>
+                  <skipPomModules>true</skipPomModules>
+              </parameter>
+              <skip>false</skip>
+          </configuration>
+          <executions>
+            <execution>
+             <phase>verify</phase>
+             <goals>
+               <goal>cmp</goal>
+             </goals>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
 
     <pluginManagement>
       <plugins>
         <plugin>
-          <groupId>org.codehaus.mojo</groupId>
-          <artifactId>findbugs-maven-plugin</artifactId>
+          <groupId>com.github.spotbugs</groupId>
+          <artifactId>spotbugs-maven-plugin</artifactId>
           <configuration>
             <excludeFilterFile>findBugs/FindBugsExcludeFilter.xml</excludeFilterFile>
           </configuration>
@@ -166,13 +219,44 @@
   <reporting>
     <plugins>
       <plugin>
-        <groupId>org.codehaus.mojo</groupId>
-        <artifactId>clirr-maven-plugin</artifactId>
-        <version>${clirr-version}</version>
-        <configuration>
-          <comparisonVersion>${jgit-last-release-version}</comparisonVersion>
-          <minSeverity>info</minSeverity>
-        </configuration>
+          <groupId>com.github.siom79.japicmp</groupId>
+          <artifactId>japicmp-maven-plugin</artifactId>
+          <version>${japicmp-version}</version>
+          <reportSets>
+              <reportSet>
+                  <reports>
+                      <report>cmp-report</report>
+                  </reports>
+              </reportSet>
+          </reportSets>
+          <configuration>
+              <oldVersion>
+                  <dependency>
+                      <groupId>${project.groupId}</groupId>
+                      <artifactId>${project.artifactId}</artifactId>
+                      <version>${jgit-last-release-version}</version>
+                  </dependency>
+              </oldVersion>
+              <newVersion>
+                  <file>
+                      <path>${project.build.directory}/${project.artifactId}-${project.version}.jar</path>
+                  </file>
+              </newVersion>
+              <parameter>
+                  <onlyModified>true</onlyModified>
+                  <includes>
+                      <include>org.eclipse.jgit.*</include>
+                  </includes>
+                  <accessModifier>public</accessModifier>
+                  <breakBuildOnModifications>false</breakBuildOnModifications>
+                  <breakBuildOnBinaryIncompatibleModifications>false</breakBuildOnBinaryIncompatibleModifications>
+                  <onlyBinaryIncompatible>false</onlyBinaryIncompatible>
+                  <includeSynthetic>false</includeSynthetic>
+                  <ignoreMissingClasses>false</ignoreMissingClasses>
+                  <skipPomModules>true</skipPomModules>
+              </parameter>
+              <skip>false</skip>
+          </configuration>
       </plugin>
     </plugins>
   </reporting>

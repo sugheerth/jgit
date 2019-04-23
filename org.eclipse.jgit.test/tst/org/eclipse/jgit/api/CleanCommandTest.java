@@ -42,14 +42,19 @@
  */
 package org.eclipse.jgit.api;
 
+import static org.eclipse.jgit.lib.Constants.DOT_GIT_MODULES;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import java.io.File;
 import java.util.Set;
 import java.util.TreeSet;
 
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.errors.NoWorkTreeException;
-import org.eclipse.jgit.lib.RepositoryTestCase;
+import org.eclipse.jgit.junit.RepositoryTestCase;
+import org.eclipse.jgit.lib.Repository;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -59,6 +64,7 @@ import org.junit.Test;
 public class CleanCommandTest extends RepositoryTestCase {
 	private Git git;
 
+	@Override
 	@Before
 	public void setUp() throws Exception {
 		super.setUp();
@@ -69,8 +75,18 @@ public class CleanCommandTest extends RepositoryTestCase {
 		writeTrashFile("File2.txt", "Delete Me");
 		writeTrashFile("File3.txt", "Delete Me");
 
+		// create files in sub-directories.
+		writeTrashFile("sub-noclean/File1.txt", "Hello world");
+		writeTrashFile("sub-noclean/File2.txt", "Delete Me");
+		writeTrashFile("sub-clean/File4.txt", "Delete Me");
+		writeTrashFile("sub-noclean/Ignored.txt", "Ignored");
+		writeTrashFile(".gitignore", "/ignored-dir\n/sub-noclean/Ignored.txt");
+		writeTrashFile("ignored-dir/Ignored2.txt", "Ignored");
+
 		// add and commit first file
 		git.add().addFilepattern("File1.txt").call();
+		git.add().addFilepattern("sub-noclean/File1.txt").call();
+		git.add().addFilepattern(".gitignore").call();
 		git.commit().setMessage("Initial commit").call();
 	}
 
@@ -88,9 +104,34 @@ public class CleanCommandTest extends RepositoryTestCase {
 		status = git.status().call();
 		files = status.getUntracked();
 
+		assertTrue(files.size() == 1); // one remains (directories not cleaned)
+		assertTrue(cleanedFiles.contains("File2.txt"));
+		assertTrue(cleanedFiles.contains("File3.txt"));
+		assertTrue(!cleanedFiles.contains("sub-noclean/File1.txt"));
+		assertTrue(cleanedFiles.contains("sub-noclean/File2.txt"));
+		assertTrue(!cleanedFiles.contains("sub-clean/File4.txt"));
+	}
+
+	@Test
+	public void testCleanDirs() throws NoWorkTreeException, GitAPIException {
+		// create status
+		StatusCommand command = git.status();
+		Status status = command.call();
+		Set<String> files = status.getUntracked();
+		assertTrue(files.size() > 0);
+
+		// run clean
+		Set<String> cleanedFiles = git.clean().setCleanDirectories(true).call();
+
+		status = git.status().call();
+		files = status.getUntracked();
+
 		assertTrue(files.size() == 0);
 		assertTrue(cleanedFiles.contains("File2.txt"));
 		assertTrue(cleanedFiles.contains("File3.txt"));
+		assertTrue(!cleanedFiles.contains("sub-noclean/File1.txt"));
+		assertTrue(cleanedFiles.contains("sub-noclean/File2.txt"));
+		assertTrue(cleanedFiles.contains("sub-clean/"));
 	}
 
 	@Test
@@ -103,15 +144,15 @@ public class CleanCommandTest extends RepositoryTestCase {
 		assertTrue(files.size() > 0);
 
 		// run clean with setPaths
-		Set<String> paths = new TreeSet<String>();
+		Set<String> paths = new TreeSet<>();
 		paths.add("File3.txt");
 		Set<String> cleanedFiles = git.clean().setPaths(paths).call();
 
 		status = git.status().call();
 		files = status.getUntracked();
-		assertTrue(files.size() == 1);
+		assertTrue(files.size() == 3);
 		assertTrue(cleanedFiles.contains("File3.txt"));
-		assertTrue(!cleanedFiles.contains("File2.txt"));
+		assertFalse(cleanedFiles.contains("File2.txt"));
 	}
 
 	@Test
@@ -129,9 +170,130 @@ public class CleanCommandTest extends RepositoryTestCase {
 		status = git.status().call();
 		files = status.getUntracked();
 
-		assertTrue(files.size() == 2);
+		assertEquals(4, files.size());
 		assertTrue(cleanedFiles.contains("File2.txt"));
 		assertTrue(cleanedFiles.contains("File3.txt"));
+		assertTrue(!cleanedFiles.contains("sub-noclean/File1.txt"));
+		assertTrue(cleanedFiles.contains("sub-noclean/File2.txt"));
 	}
 
+	@Test
+	public void testCleanDirsWithDryRun() throws NoWorkTreeException,
+			GitAPIException {
+		// create status
+		StatusCommand command = git.status();
+		Status status = command.call();
+		Set<String> files = status.getUntracked();
+		assertTrue(files.size() > 0);
+
+		// run clean
+		Set<String> cleanedFiles = git.clean().setDryRun(true)
+				.setCleanDirectories(true).call();
+
+		status = git.status().call();
+		files = status.getUntracked();
+
+		assertTrue(files.size() == 4);
+		assertTrue(cleanedFiles.contains("File2.txt"));
+		assertTrue(cleanedFiles.contains("File3.txt"));
+		assertTrue(!cleanedFiles.contains("sub-noclean/File1.txt"));
+		assertTrue(cleanedFiles.contains("sub-noclean/File2.txt"));
+		assertTrue(cleanedFiles.contains("sub-clean/"));
+	}
+
+	@Test
+	public void testCleanWithDryRunAndNoIgnore() throws NoWorkTreeException,
+			GitAPIException {
+		// run clean
+		Set<String> cleanedFiles = git.clean().setDryRun(true).setIgnore(false)
+				.call();
+
+		Status status = git.status().call();
+		Set<String> files = status.getIgnoredNotInIndex();
+
+		assertTrue(files.size() == 2);
+		assertTrue(cleanedFiles.contains("sub-noclean/Ignored.txt"));
+		assertTrue(!cleanedFiles.contains("ignored-dir/"));
+	}
+
+	@Test
+	public void testCleanDirsWithDryRunAndNoIgnore()
+			throws NoWorkTreeException, GitAPIException {
+		// run clean
+		Set<String> cleanedFiles = git.clean().setDryRun(true).setIgnore(false)
+				.setCleanDirectories(true).call();
+
+		Status status = git.status().call();
+		Set<String> files = status.getIgnoredNotInIndex();
+
+		assertTrue(files.size() == 2);
+		assertTrue(cleanedFiles.contains("sub-noclean/Ignored.txt"));
+		assertTrue(cleanedFiles.contains("ignored-dir/"));
+	}
+
+	@Test
+	public void testCleanDirsWithSubmodule() throws Exception {
+		SubmoduleAddCommand command = new SubmoduleAddCommand(db);
+		String path = "sub";
+		command.setPath(path);
+		String uri = db.getDirectory().toURI().toString();
+		command.setURI(uri);
+		Repository repo = command.call();
+		repo.close();
+
+		Status beforeCleanStatus = git.status().call();
+		assertTrue(beforeCleanStatus.getAdded().contains(DOT_GIT_MODULES));
+		assertTrue(beforeCleanStatus.getAdded().contains(path));
+
+		Set<String> cleanedFiles = git.clean().setCleanDirectories(true).call();
+
+		// The submodule should not be cleaned.
+		assertTrue(!cleanedFiles.contains(path + "/"));
+
+		assertTrue(cleanedFiles.contains("File2.txt"));
+		assertTrue(cleanedFiles.contains("File3.txt"));
+		assertTrue(!cleanedFiles.contains("sub-noclean/File1.txt"));
+		assertTrue(cleanedFiles.contains("sub-noclean/File2.txt"));
+		assertTrue(cleanedFiles.contains("sub-clean/"));
+		assertTrue(cleanedFiles.size() == 4);
+	}
+
+	@Test
+	public void testCleanDirsWithRepository() throws Exception {
+		// Set up a repository inside the outer repository
+		String innerRepoName = "inner-repo";
+		File innerDir = new File(trash, innerRepoName);
+		innerDir.mkdir();
+		InitCommand initRepoCommand = new InitCommand();
+		initRepoCommand.setDirectory(innerDir);
+		initRepoCommand.call();
+
+		Status beforeCleanStatus = git.status().call();
+		Set<String> untrackedFolders = beforeCleanStatus.getUntrackedFolders();
+		Set<String> untrackedFiles = beforeCleanStatus.getUntracked();
+
+		// The inner repository should be listed as an untracked file
+		assertTrue(untrackedFiles.contains(innerRepoName));
+
+		// The inner repository should not be listed as an untracked folder
+		assertTrue(!untrackedFolders.contains(innerRepoName));
+
+		Set<String> cleanedFiles = git.clean().setCleanDirectories(true).call();
+
+		// The inner repository should not be cleaned.
+		assertTrue(!cleanedFiles.contains(innerRepoName + "/"));
+
+		assertTrue(cleanedFiles.contains("File2.txt"));
+		assertTrue(cleanedFiles.contains("File3.txt"));
+		assertTrue(!cleanedFiles.contains("sub-noclean/File1.txt"));
+		assertTrue(cleanedFiles.contains("sub-noclean/File2.txt"));
+		assertTrue(cleanedFiles.contains("sub-clean/"));
+		assertTrue(cleanedFiles.size() == 4);
+
+		Set<String> forceCleanedFiles = git.clean().setCleanDirectories(true)
+				.setForce(true).call();
+
+		// The inner repository should be cleaned this time
+		assertTrue(forceCleanedFiles.contains(innerRepoName + "/"));
+	}
 }

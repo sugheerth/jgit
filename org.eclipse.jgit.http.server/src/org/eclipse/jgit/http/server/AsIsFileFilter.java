@@ -70,24 +70,29 @@ class AsIsFileFilter implements Filter {
 		this.asIs = getAnyFile;
 	}
 
+	@Override
 	public void init(FilterConfig config) throws ServletException {
 		// Do nothing.
 	}
 
+	@Override
 	public void destroy() {
 		// Do nothing.
 	}
 
+	@Override
 	public void doFilter(ServletRequest request, ServletResponse response,
 			FilterChain chain) throws IOException, ServletException {
+		HttpServletRequest req = (HttpServletRequest) request;
+		HttpServletResponse res = (HttpServletResponse) response;
 		try {
 			final Repository db = getRepository(request);
-			asIs.access((HttpServletRequest) request, db);
+			asIs.access(req, db);
 			chain.doFilter(request, response);
 		} catch (ServiceNotAuthorizedException e) {
-			((HttpServletResponse) response).sendError(SC_UNAUTHORIZED);
+			res.sendError(SC_UNAUTHORIZED, e.getMessage());
 		} catch (ServiceNotEnabledException e) {
-			((HttpServletResponse) response).sendError(SC_FORBIDDEN);
+			res.sendError(SC_FORBIDDEN, e.getMessage());
 		}
 	}
 }

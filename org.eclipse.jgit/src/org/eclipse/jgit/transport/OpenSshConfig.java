@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2008-2009, Google Inc.
+ * Copyright (C) 2008, 2014, Google Inc.
  * and other copyright owners as documented in the project's IP log.
  *
  * This program and the accompanying materials are made available
@@ -91,9 +91,9 @@ public class OpenSshConfig {
 	public static OpenSshConfig get(FS fs) {
 		File home = fs.userHome();
 		if (home == null)
-			home = new File(".").getAbsoluteFile();
+			home = new File(".").getAbsoluteFile(); //$NON-NLS-1$
 
-		final File config = new File(new File(home, ".ssh"), Constants.CONFIG);
+		final File config = new File(new File(home, ".ssh"), Constants.CONFIG); //$NON-NLS-1$
 		final OpenSshConfig osc = new OpenSshConfig(home, config);
 		osc.refresh();
 		return osc;
@@ -148,6 +148,8 @@ public class OpenSshConfig {
 			h.user = OpenSshConfig.userName();
 		if (h.port == 0)
 			h.port = OpenSshConfig.SSH_PORT;
+		if (h.connectionAttempts == 0)
+			h.connectionAttempts = 1;
 		h.patternsApplied = true;
 		return h;
 	}
@@ -173,23 +175,23 @@ public class OpenSshConfig {
 	}
 
 	private Map<String, Host> parse(final InputStream in) throws IOException {
-		final Map<String, Host> m = new LinkedHashMap<String, Host>();
+		final Map<String, Host> m = new LinkedHashMap<>();
 		final BufferedReader br = new BufferedReader(new InputStreamReader(in));
-		final List<Host> current = new ArrayList<Host>(4);
+		final List<Host> current = new ArrayList<>(4);
 		String line;
 
 		while ((line = br.readLine()) != null) {
 			line = line.trim();
-			if (line.length() == 0 || line.startsWith("#"))
+			if (line.length() == 0 || line.startsWith("#")) //$NON-NLS-1$
 				continue;
 
-			final String[] parts = line.split("[ \t]*[= \t]", 2);
+			final String[] parts = line.split("[ \t]*[= \t]", 2); //$NON-NLS-1$
 			final String keyword = parts[0].trim();
 			final String argValue = parts[1].trim();
 
-			if (StringUtils.equalsIgnoreCase("Host", keyword)) {
+			if (StringUtils.equalsIgnoreCase("Host", keyword)) { //$NON-NLS-1$
 				current.clear();
-				for (final String pattern : argValue.split("[ \t]")) {
+				for (final String pattern : argValue.split("[ \t]")) { //$NON-NLS-1$
 					final String name = dequote(pattern);
 					Host c = m.get(name);
 					if (c == null) {
@@ -208,15 +210,15 @@ public class OpenSshConfig {
 				continue;
 			}
 
-			if (StringUtils.equalsIgnoreCase("HostName", keyword)) {
+			if (StringUtils.equalsIgnoreCase("HostName", keyword)) { //$NON-NLS-1$
 				for (final Host c : current)
 					if (c.hostName == null)
 						c.hostName = dequote(argValue);
-			} else if (StringUtils.equalsIgnoreCase("User", keyword)) {
+			} else if (StringUtils.equalsIgnoreCase("User", keyword)) { //$NON-NLS-1$
 				for (final Host c : current)
 					if (c.user == null)
 						c.user = dequote(argValue);
-			} else if (StringUtils.equalsIgnoreCase("Port", keyword)) {
+			} else if (StringUtils.equalsIgnoreCase("Port", keyword)) { //$NON-NLS-1$
 				try {
 					final int port = Integer.parseInt(dequote(argValue));
 					for (final Host c : current)
@@ -225,23 +227,37 @@ public class OpenSshConfig {
 				} catch (NumberFormatException nfe) {
 					// Bad port number. Don't set it.
 				}
-			} else if (StringUtils.equalsIgnoreCase("IdentityFile", keyword)) {
+			} else if (StringUtils.equalsIgnoreCase("IdentityFile", keyword)) { //$NON-NLS-1$
 				for (final Host c : current)
 					if (c.identityFile == null)
 						c.identityFile = toFile(dequote(argValue));
-			} else if (StringUtils.equalsIgnoreCase("PreferredAuthentications", keyword)) {
+			} else if (StringUtils.equalsIgnoreCase(
+					"PreferredAuthentications", keyword)) { //$NON-NLS-1$
 				for (final Host c : current)
 					if (c.preferredAuthentications == null)
 						c.preferredAuthentications = nows(dequote(argValue));
-			} else if (StringUtils.equalsIgnoreCase("BatchMode", keyword)) {
+			} else if (StringUtils.equalsIgnoreCase("BatchMode", keyword)) { //$NON-NLS-1$
 				for (final Host c : current)
 					if (c.batchMode == null)
 						c.batchMode = yesno(dequote(argValue));
-			} else if (StringUtils.equalsIgnoreCase("StrictHostKeyChecking", keyword)) {
+			} else if (StringUtils.equalsIgnoreCase(
+					"StrictHostKeyChecking", keyword)) { //$NON-NLS-1$
 				String value = dequote(argValue);
 				for (final Host c : current)
 					if (c.strictHostKeyChecking == null)
 						c.strictHostKeyChecking = value;
+			} else if (StringUtils.equalsIgnoreCase(
+					"ConnectionAttempts", keyword)) { //$NON-NLS-1$
+				try {
+					final int connectionAttempts = Integer.parseInt(dequote(argValue));
+					if (connectionAttempts > 0) {
+						for (final Host c : current)
+							if (c.connectionAttempts == 0)
+								c.connectionAttempts = connectionAttempts;
+					}
+				} catch (NumberFormatException nfe) {
+					// ignore bad values
+				}
 			}
 		}
 
@@ -264,7 +280,7 @@ public class OpenSshConfig {
 	}
 
 	private static String dequote(final String value) {
-		if (value.startsWith("\"") && value.endsWith("\""))
+		if (value.startsWith("\"") && value.endsWith("\"")) //$NON-NLS-1$ //$NON-NLS-2$
 			return value.substring(1, value.length() - 1);
 		return value;
 	}
@@ -279,13 +295,13 @@ public class OpenSshConfig {
 	}
 
 	private static Boolean yesno(final String value) {
-		if (StringUtils.equalsIgnoreCase("yes", value))
+		if (StringUtils.equalsIgnoreCase("yes", value)) //$NON-NLS-1$
 			return Boolean.TRUE;
 		return Boolean.FALSE;
 	}
 
 	private File toFile(final String path) {
-		if (path.startsWith("~/"))
+		if (path.startsWith("~/")) //$NON-NLS-1$
 			return new File(home, path.substring(2));
 		File ret = new File(path);
 		if (ret.isAbsolute())
@@ -295,8 +311,9 @@ public class OpenSshConfig {
 
 	static String userName() {
 		return AccessController.doPrivileged(new PrivilegedAction<String>() {
+			@Override
 			public String run() {
-				return System.getProperty("user.name");
+				return System.getProperty("user.name"); //$NON-NLS-1$
 			}
 		});
 	}
@@ -329,6 +346,8 @@ public class OpenSshConfig {
 
 		String strictHostKeyChecking;
 
+		int connectionAttempts;
+
 		void copyFrom(final Host src) {
 			if (hostName == null)
 				hostName = src.hostName;
@@ -344,6 +363,8 @@ public class OpenSshConfig {
 				batchMode = src.batchMode;
 			if (strictHostKeyChecking == null)
 				strictHostKeyChecking = src.strictHostKeyChecking;
+			if (connectionAttempts == 0)
+				connectionAttempts = src.connectionAttempts;
 		}
 
 		/**
@@ -399,6 +420,17 @@ public class OpenSshConfig {
 		 */
 		public boolean isBatchMode() {
 			return batchMode != null && batchMode.booleanValue();
+		}
+
+		/**
+		 * @return the number of tries (one per second) to connect before
+		 *         exiting. The argument must be an integer. This may be useful
+		 *         in scripts if the connection sometimes fails. The default is
+		 *         1.
+		 * @since 3.4
+		 */
+		public int getConnectionAttempts() {
+			return connectionAttempts;
 		}
 	}
 }

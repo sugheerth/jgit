@@ -46,6 +46,7 @@ import java.net.URISyntaxException;
 import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -61,6 +62,7 @@ import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.transport.FetchConnection;
 import org.eclipse.jgit.transport.RefSpec;
 import org.eclipse.jgit.transport.Transport;
+import org.eclipse.jgit.transport.URIish;
 
 /**
  * The ls-remote command
@@ -82,6 +84,8 @@ public class LsRemoteCommand extends
 
 	/**
 	 * @param repo
+	 *            local repository or null for operation without local
+	 *            repository
 	 */
 	public LsRemoteCommand(Repository repo) {
 		super(repo);
@@ -142,43 +146,70 @@ public class LsRemoteCommand extends
 	 * of the command. Don't call this method twice on an instance.
 	 *
 	 * @return a collection of references in the remote repository
+	 * @throws GitAPIException
+	 *             or subclass thereof when an error occurs
 	 * @throws InvalidRemoteException
 	 *             when called with an invalid remote uri
 	 * @throws org.eclipse.jgit.api.errors.TransportException
 	 *             for errors that occurs during transport
 	 */
+	@Override
 	public Collection<Ref> call() throws GitAPIException,
+			InvalidRemoteException,
+			org.eclipse.jgit.api.errors.TransportException {
+		return execute().values();
+	}
+
+	/**
+	 * Same as {@link #call()}, but return Map instead of Collection.
+	 *
+	 * @return a map from names to references in the remote repository
+	 * @throws GitAPIException
+	 *             or subclass thereof when an error occurs
+	 * @throws InvalidRemoteException
+	 *             when called with an invalid remote uri
+	 * @throws org.eclipse.jgit.api.errors.TransportException
+	 *             for errors that occurs during transport
+	 * @since 3.5
+	 */
+	public Map<String, Ref> callAsMap() throws GitAPIException,
+			InvalidRemoteException,
+			org.eclipse.jgit.api.errors.TransportException {
+		return Collections.unmodifiableMap(execute());
+	}
+
+	private Map<String, Ref> execute() throws GitAPIException,
 			InvalidRemoteException,
 			org.eclipse.jgit.api.errors.TransportException {
 		checkCallable();
 
-		Transport transport = null;
-		FetchConnection fc = null;
-		try {
-			transport = Transport.open(repo, remote);
+		try (Transport transport = repo != null
+				? Transport.open(repo, remote)
+				: Transport.open(new URIish(remote))) {
 			transport.setOptionUploadPack(uploadPack);
 			configure(transport);
-			Collection<RefSpec> refSpecs = new ArrayList<RefSpec>(1);
+			Collection<RefSpec> refSpecs = new ArrayList<>(1);
 			if (tags)
 				refSpecs.add(new RefSpec(
-						"refs/tags/*:refs/remotes/origin/tags/*"));
+						"refs/tags/*:refs/remotes/origin/tags/*")); //$NON-NLS-1$
 			if (heads)
-				refSpecs.add(new RefSpec("refs/heads/*:refs/remotes/origin/*"));
+				refSpecs.add(new RefSpec("refs/heads/*:refs/remotes/origin/*")); //$NON-NLS-1$
 			Collection<Ref> refs;
-			Map<String, Ref> refmap = new HashMap<String, Ref>();
-			fc = transport.openFetch();
-			refs = fc.getRefs();
-			if (refSpecs.isEmpty())
-				for (Ref r : refs)
-					refmap.put(r.getName(), r);
-			else
-				for (Ref r : refs)
-					for (RefSpec rs : refSpecs)
-						if (rs.matchSource(r)) {
-							refmap.put(r.getName(), r);
-							break;
-						}
-			return refmap.values();
+			Map<String, Ref> refmap = new HashMap<>();
+			try (FetchConnection fc = transport.openFetch()) {
+				refs = fc.getRefs();
+				if (refSpecs.isEmpty())
+					for (Ref r : refs)
+						refmap.put(r.getName(), r);
+				else
+					for (Ref r : refs)
+						for (RefSpec rs : refSpecs)
+							if (rs.matchSource(r)) {
+								refmap.put(r.getName(), r);
+								break;
+							}
+				return refmap;
+			}
 		} catch (URISyntaxException e) {
 			throw new InvalidRemoteException(MessageFormat.format(
 					JGitText.get().invalidRemote, remote));
@@ -190,11 +221,6 @@ public class LsRemoteCommand extends
 			throw new org.eclipse.jgit.api.errors.TransportException(
 					e.getMessage(),
 					e);
-		} finally {
-			if (fc != null)
-				fc.close();
-			if (transport != null)
-				transport.close();
 		}
 	}
 

@@ -128,7 +128,25 @@ public abstract class AndTreeFilter extends TreeFilter {
 		public boolean include(final TreeWalk walker)
 				throws MissingObjectException, IncorrectObjectTypeException,
 				IOException {
-			return a.include(walker) && b.include(walker);
+			return matchFilter(walker) <= 0;
+		}
+
+		@Override
+		public int matchFilter(TreeWalk walker)
+				throws MissingObjectException, IncorrectObjectTypeException,
+				IOException {
+			final int ra = a.matchFilter(walker);
+			if (ra == 1) {
+				return 1;
+			}
+			final int rb = b.matchFilter(walker);
+			if (rb == 1) {
+				return 1;
+			}
+			if (ra == -1 || rb == -1) {
+				return -1;
+			}
+			return 0;
 		}
 
 		@Override
@@ -141,6 +159,7 @@ public abstract class AndTreeFilter extends TreeFilter {
 			return new Binary(a.clone(), b.clone());
 		}
 
+		@SuppressWarnings("nls")
 		@Override
 		public String toString() {
 			return "(" + a.toString() + " AND " + b.toString() + ")";
@@ -158,11 +177,24 @@ public abstract class AndTreeFilter extends TreeFilter {
 		public boolean include(final TreeWalk walker)
 				throws MissingObjectException, IncorrectObjectTypeException,
 				IOException {
+			return matchFilter(walker) <= 0;
+		}
+
+		@Override
+		public int matchFilter(TreeWalk walker)
+				throws MissingObjectException, IncorrectObjectTypeException,
+				IOException {
+			int m = 0;
 			for (final TreeFilter f : subfilters) {
-				if (!f.include(walker))
-					return false;
+				int r = f.matchFilter(walker);
+				if (r == 1) {
+					return 1;
+				}
+				if (r == -1) {
+					m = -1;
+				}
 			}
-			return true;
+			return m;
 		}
 
 		@Override
@@ -181,6 +213,7 @@ public abstract class AndTreeFilter extends TreeFilter {
 			return new List(s);
 		}
 
+		@SuppressWarnings("nls")
 		@Override
 		public String toString() {
 			final StringBuilder r = new StringBuilder();

@@ -51,7 +51,7 @@ import java.io.StringWriter;
 import java.util.Collection;
 import java.util.Map;
 
-import org.eclipse.jgit.storage.file.RefDirectory;
+import org.eclipse.jgit.internal.storage.file.RefDirectory;
 import org.eclipse.jgit.util.RefList;
 import org.eclipse.jgit.util.RefMap;
 
@@ -119,16 +119,23 @@ public abstract class RefWriter {
 				continue;
 			}
 
-			r.getObjectId().copyTo(tmp, w);
+			ObjectId objectId = r.getObjectId();
+			if (objectId == null) {
+				// Symrefs to unborn branches aren't advertised in the info/refs
+				// file.
+				continue;
+			}
+			objectId.copyTo(tmp, w);
 			w.write('\t');
 			w.write(r.getName());
 			w.write('\n');
 
-			if (r.getPeeledObjectId() != null) {
-				r.getPeeledObjectId().copyTo(tmp, w);
+			ObjectId peeledObjectId = r.getPeeledObjectId();
+			if (peeledObjectId != null) {
+				peeledObjectId.copyTo(tmp, w);
 				w.write('\t');
 				w.write(r.getName());
-				w.write("^{}\n");
+				w.write("^{}\n"); //$NON-NLS-1$
 			}
 		}
 		writeFile(Constants.INFO_REFS, Constants.encode(w.toString()));
@@ -167,14 +174,21 @@ public abstract class RefWriter {
 			if (r.getStorage() != Ref.Storage.PACKED)
 				continue;
 
-			r.getObjectId().copyTo(tmp, w);
+			ObjectId objectId = r.getObjectId();
+			if (objectId == null) {
+				// A packed ref cannot be a symref, let alone a symref
+				// to an unborn branch.
+				throw new NullPointerException();
+			}
+			objectId.copyTo(tmp, w);
 			w.write(' ');
 			w.write(r.getName());
 			w.write('\n');
 
-			if (r.getPeeledObjectId() != null) {
+			ObjectId peeledObjectId = r.getPeeledObjectId();
+			if (peeledObjectId != null) {
 				w.write('^');
-				r.getPeeledObjectId().copyTo(tmp, w);
+				peeledObjectId.copyTo(tmp, w);
 				w.write('\n');
 			}
 		}

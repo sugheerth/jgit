@@ -55,6 +55,8 @@ import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.MutableObjectId;
 import org.eclipse.jgit.util.IO;
 import org.eclipse.jgit.util.RawParseUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Read Git style pkt-line formatting from an input stream.
@@ -67,6 +69,8 @@ import org.eclipse.jgit.util.RawParseUtils;
  * against the underlying InputStream.
  */
 public class PacketLineIn {
+	private static final Logger log = LoggerFactory.getLogger(PacketLineIn.class);
+
 	/** Magic return from {@link #readString()} when a flush packet is found. */
 	public static final String END = new StringBuilder(0).toString(); 	/* must not string pool */
 
@@ -83,41 +87,54 @@ public class PacketLineIn {
 		ACK_READY;
 	}
 
+	private final byte[] lineBuffer = new byte[SideBandOutputStream.SMALL_BUF];
 	private final InputStream in;
-
-	private final byte[] lineBuffer;
+	private long limit;
 
 	/**
 	 * Create a new packet line reader.
 	 *
-	 * @param i
+	 * @param in
 	 *            the input stream to consume.
 	 */
-	public PacketLineIn(final InputStream i) {
-		in = i;
-		lineBuffer = new byte[SideBandOutputStream.SMALL_BUF];
+	public PacketLineIn(InputStream in) {
+		this(in, 0);
+	}
+
+	/**
+	 * Create a new packet line reader.
+	 *
+	 * @param in
+	 *            the input stream to consume.
+	 * @param limit
+	 *            bytes to read from the input; unlimited if set to 0.
+	 * @since 4.7
+	 */
+	public PacketLineIn(InputStream in, long limit) {
+		this.in = in;
+		this.limit = limit;
 	}
 
 	AckNackResult readACK(final MutableObjectId returnedId) throws IOException {
 		final String line = readString();
 		if (line.length() == 0)
 			throw new PackProtocolException(JGitText.get().expectedACKNAKFoundEOF);
-		if ("NAK".equals(line))
+		if ("NAK".equals(line)) //$NON-NLS-1$
 			return AckNackResult.NAK;
-		if (line.startsWith("ACK ")) {
+		if (line.startsWith("ACK ")) { //$NON-NLS-1$
 			returnedId.fromString(line.substring(4, 44));
 			if (line.length() == 44)
 				return AckNackResult.ACK;
 
 			final String arg = line.substring(44);
-			if (arg.equals(" continue"))
+			if (arg.equals(" continue")) //$NON-NLS-1$
 				return AckNackResult.ACK_CONTINUE;
-			else if (arg.equals(" common"))
+			else if (arg.equals(" common")) //$NON-NLS-1$
 				return AckNackResult.ACK_COMMON;
-			else if (arg.equals(" ready"))
+			else if (arg.equals(" ready")) //$NON-NLS-1$
 				return AckNackResult.ACK_READY;
 		}
-		if (line.startsWith("ERR "))
+		if (line.startsWith("ERR ")) //$NON-NLS-1$
 			throw new PackProtocolException(line.substring(4));
 		throw new PackProtocolException(MessageFormat.format(JGitText.get().expectedACKNAKGot, line));
 	}
@@ -136,12 +153,16 @@ public class PacketLineIn {
 	 */
 	public String readString() throws IOException {
 		int len = readLength();
-		if (len == 0)
+		if (len == 0) {
+			log.debug("git< 0000"); //$NON-NLS-1$
 			return END;
+		}
 
 		len -= 4; // length header (4 bytes)
-		if (len == 0)
-			return "";
+		if (len == 0) {
+			log.debug("git< "); //$NON-NLS-1$
+			return ""; //$NON-NLS-1$
+		}
 
 		byte[] raw;
 		if (len <= lineBuffer.length)
@@ -152,7 +173,10 @@ public class PacketLineIn {
 		IO.readFully(in, raw, 0, len);
 		if (raw[len - 1] == '\n')
 			len--;
-		return RawParseUtils.decode(Constants.CHARSET, raw, 0, len);
+
+		String s = RawParseUtils.decode(Constants.CHARSET, raw, 0, len);
+		log.debug("git< " + s); //$NON-NLS-1$
+		return s;
 	}
 
 	/**
@@ -167,8 +191,10 @@ public class PacketLineIn {
 	 */
 	public String readStringRaw() throws IOException {
 		int len = readLength();
-		if (len == 0)
+		if (len == 0) {
+			log.debug("git< 0000"); //$NON-NLS-1$
 			return END;
+		}
 
 		len -= 4; // length header (4 bytes)
 
@@ -179,20 +205,66 @@ public class PacketLineIn {
 			raw = new byte[len];
 
 		IO.readFully(in, raw, 0, len);
-		return RawParseUtils.decode(Constants.CHARSET, raw, 0, len);
+
+		String s = RawParseUtils.decode(Constants.CHARSET, raw, 0, len);
+		log.debug("git< " + s); //$NON-NLS-1$
+		return s;
+	}
+
+	void discardUntilEnd() throws IOException {
+		for (;;) {
+			int n = readLength();
+			if (n == 0) {
+				break;
+			}
+			IO.skipFully(in, n - 4);
+		}
 	}
 
 	int readLength() throws IOException {
 		IO.readFully(in, lineBuffer, 0, 4);
+		int len;
 		try {
-			final int len = RawParseUtils.parseHexInt16(lineBuffer, 0);
-			if (len != 0 && len < 4)
-				throw new ArrayIndexOutOfBoundsException();
-			return len;
+			len = RawParseUtils.parseHexInt16(lineBuffer, 0);
 		} catch (ArrayIndexOutOfBoundsException err) {
-			throw new IOException(MessageFormat.format(JGitText.get().invalidPacketLineHeader,
-					"" + (char) lineBuffer[0] + (char) lineBuffer[1]
-					+ (char) lineBuffer[2] + (char) lineBuffer[3]));
+			throw invalidHeader();
 		}
+
+		if (len == 0) {
+			return 0;
+		} else if (len < 4) {
+			throw invalidHeader();
+		}
+
+		if (limit != 0) {
+			int n = len - 4;
+			if (limit < n) {
+				limit = -1;
+				try {
+					IO.skipFully(in, n);
+				} catch (IOException e) {
+					// Ignore failure discarding packet over limit.
+				}
+				throw new InputOverLimitIOException();
+			}
+			// if set limit must not be 0 (means unlimited).
+			limit = n < limit ? limit - n : -1;
+		}
+		return len;
+	}
+
+	private IOException invalidHeader() {
+		return new IOException(MessageFormat.format(JGitText.get().invalidPacketLineHeader,
+				"" + (char) lineBuffer[0] + (char) lineBuffer[1] //$NON-NLS-1$
+				+ (char) lineBuffer[2] + (char) lineBuffer[3]));
+	}
+
+	/**
+	 * IOException thrown by read when the configured input limit is exceeded.
+	 *
+	 * @since 4.7
+	 */
+	public static class InputOverLimitIOException extends IOException {
+		private static final long serialVersionUID = 1L;
 	}
 }

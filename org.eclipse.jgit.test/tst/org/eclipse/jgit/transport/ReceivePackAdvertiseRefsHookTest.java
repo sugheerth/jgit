@@ -62,6 +62,8 @@ import java.util.zip.Deflater;
 
 import org.eclipse.jgit.errors.MissingObjectException;
 import org.eclipse.jgit.errors.UnpackException;
+import org.eclipse.jgit.internal.storage.file.ObjectDirectory;
+import org.eclipse.jgit.internal.storage.pack.BinaryDelta;
 import org.eclipse.jgit.junit.LocalDiskRepositoryTestCase;
 import org.eclipse.jgit.junit.TestRepository;
 import org.eclipse.jgit.lib.Constants;
@@ -75,8 +77,6 @@ import org.eclipse.jgit.revwalk.RevBlob;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevTree;
 import org.eclipse.jgit.revwalk.RevWalk;
-import org.eclipse.jgit.storage.file.ObjectDirectory;
-import org.eclipse.jgit.storage.pack.BinaryDelta;
 import org.eclipse.jgit.util.NB;
 import org.eclipse.jgit.util.TemporaryBuffer;
 import org.junit.After;
@@ -108,7 +108,7 @@ public class ReceivePackAdvertiseRefsHookTest extends LocalDiskRepositoryTestCas
 
 		// Fill dst with a some common history.
 		//
-		TestRepository d = new TestRepository(dst);
+		TestRepository<Repository> d = new TestRepository<>(dst);
 		a = d.blob("a");
 		A = d.commit(d.tree(d.file("a", a)));
 		B = d.commit().parent(A).create();
@@ -116,12 +116,9 @@ public class ReceivePackAdvertiseRefsHookTest extends LocalDiskRepositoryTestCas
 
 		// Clone from dst into src
 		//
-		Transport t = Transport.open(src, uriOf(dst));
-		try {
+		try (Transport t = Transport.open(src, uriOf(dst))) {
 			t.fetch(PM, Collections.singleton(new RefSpec("+refs/*:refs/*")));
 			assertEquals(B, src.resolve(R_MASTER));
-		} finally {
-			t.close();
 		}
 
 		// Now put private stuff into dst.
@@ -131,20 +128,11 @@ public class ReceivePackAdvertiseRefsHookTest extends LocalDiskRepositoryTestCas
 		d.update(R_PRIVATE, P);
 	}
 
-	@Override
-	@After
-	public void tearDown() throws Exception {
-		if (src != null)
-			src.close();
-		if (dst != null)
-			dst.close();
-		super.tearDown();
-	}
-
 	@Test
 	public void testFilterHidesPrivate() throws Exception {
 		Map<String, Ref> refs;
-		TransportLocal t = new TransportLocal(src, uriOf(dst), dst.getDirectory()) {
+		try (TransportLocal t = new TransportLocal(src, uriOf(dst),
+				dst.getDirectory()) {
 			@Override
 			ReceivePack createReceivePack(final Repository db) {
 				db.close();
@@ -154,16 +142,10 @@ public class ReceivePackAdvertiseRefsHookTest extends LocalDiskRepositoryTestCas
 				rp.setAdvertiseRefsHook(new HidePrivateHook());
 				return rp;
 			}
-		};
-		try {
-			PushConnection c = t.openPush();
-			try {
+		}) {
+			try (PushConnection c = t.openPush()) {
 				refs = c.getRefsMap();
-			} finally {
-				c.close();
 			}
-		} finally {
-			t.close();
 		}
 
 		assertNotNull(refs);
@@ -201,7 +183,7 @@ public class ReceivePackAdvertiseRefsHookTest extends LocalDiskRepositoryTestCas
 
 		// Now use b but in a different commit than what is hidden.
 		//
-		TestRepository s = new TestRepository(src);
+		TestRepository<Repository> s = new TestRepository<>(src);
 		RevCommit N = s.commit().parent(B).add("q", b).create();
 		s.update(R_MASTER, N);
 
@@ -283,7 +265,7 @@ public class ReceivePackAdvertiseRefsHookTest extends LocalDiskRepositoryTestCas
 		assertSame(PacketLineIn.END, r.readString());
 	}
 
-	private void receive(final ReceivePack rp,
+	private static void receive(final ReceivePack rp,
 			final TemporaryBuffer.Heap inBuf, final TemporaryBuffer.Heap outBuf)
 			throws IOException {
 		rp.receive(new ByteArrayInputStream(inBuf.toByteArray()), outBuf, null);
@@ -292,7 +274,7 @@ public class ReceivePackAdvertiseRefsHookTest extends LocalDiskRepositoryTestCas
 	@Test
 	public void testUsingHiddenDeltaBaseFails() throws Exception {
 		byte[] delta = { 0x1, 0x1, 0x1, 'c' };
-		TestRepository<Repository> s = new TestRepository<Repository>(src);
+		TestRepository<Repository> s = new TestRepository<>(src);
 		RevCommit N = s.commit().parent(B).add("q",
 				s.blob(BinaryDelta.apply(dst.open(b).getCachedBytes(), delta)))
 				.create();
@@ -345,7 +327,7 @@ public class ReceivePackAdvertiseRefsHookTest extends LocalDiskRepositoryTestCas
 	public void testUsingHiddenCommonBlobFails() throws Exception {
 		// Try to use the 'b' blob that is hidden.
 		//
-		TestRepository<Repository> s = new TestRepository<Repository>(src);
+		TestRepository<Repository> s = new TestRepository<>(src);
 		RevCommit N = s.commit().parent(B).add("q", s.blob("b")).create();
 
 		// But don't include it in the pack.
@@ -395,7 +377,7 @@ public class ReceivePackAdvertiseRefsHookTest extends LocalDiskRepositoryTestCas
 	public void testUsingUnknownBlobFails() throws Exception {
 		// Try to use the 'n' blob that is not on the server.
 		//
-		TestRepository<Repository> s = new TestRepository<Repository>(src);
+		TestRepository<Repository> s = new TestRepository<>(src);
 		RevBlob n = s.blob("n");
 		RevCommit N = s.commit().parent(B).add("q", n).create();
 
@@ -443,8 +425,73 @@ public class ReceivePackAdvertiseRefsHookTest extends LocalDiskRepositoryTestCas
 	}
 
 	@Test
+	public void testIncludesInvalidGitmodules() throws Exception {
+		final TemporaryBuffer.Heap inBuf = setupSourceRepoInvalidGitmodules();
+		final TemporaryBuffer.Heap outBuf = new TemporaryBuffer.Heap(1024);
+		final ReceivePack rp = new ReceivePack(dst);
+		rp.setCheckReceivedObjects(true);
+		rp.setCheckReferencedObjectsAreReachable(true);
+		rp.setAdvertiseRefsHook(new HidePrivateHook());
+		try {
+			receive(rp, inBuf, outBuf);
+			fail("Expected UnpackException");
+		} catch (UnpackException failed) {
+			Throwable err = failed.getCause();
+			assertTrue(err instanceof IOException);
+		}
+
+		final PacketLineIn r = asPacketLineIn(outBuf);
+		String master = r.readString();
+		int nul = master.indexOf('\0');
+		assertTrue("has capability list", nul > 0);
+		assertEquals(B.name() + ' ' + R_MASTER, master.substring(0, nul));
+		assertSame(PacketLineIn.END, r.readString());
+
+		String errorLine = r.readString();
+		System.out.println(errorLine);
+		assertTrue(errorLine.startsWith(
+				"unpack error Invalid submodule URL '-"));
+		assertEquals("ng refs/heads/s n/a (unpacker error)", r.readString());
+		assertSame(PacketLineIn.END, r.readString());
+	}
+
+	private TemporaryBuffer.Heap setupSourceRepoInvalidGitmodules()
+			throws IOException, Exception, MissingObjectException {
+		String fakeGitmodules = new StringBuilder()
+				.append("[submodule \"test\"]\n")
+				.append("    path = xlib\n")
+				.append("    url = https://example.com/repo/xlib.git\n\n")
+				.append("[submodule \"test2\"]\n")
+				.append("    path = zlib\n")
+				.append("    url = -upayload.sh\n")
+				.toString();
+
+		TestRepository<Repository> s = new TestRepository<>(src);
+		RevBlob blob = s.blob(fakeGitmodules);
+		RevCommit N = s.commit().parent(B)
+				.add(".gitmodules", blob).create();
+		RevTree t = s.parseBody(N).getTree();
+
+		final TemporaryBuffer.Heap pack = new TemporaryBuffer.Heap(1024);
+		packHeader(pack, 3);
+		copy(pack, src.open(N));
+		copy(pack, src.open(t));
+		copy(pack, src.open(blob));
+		digest(pack);
+
+		final TemporaryBuffer.Heap inBuf = new TemporaryBuffer.Heap(1024);
+		final PacketLineOut inPckLine = new PacketLineOut(inBuf);
+		inPckLine.writeString(ObjectId.zeroId().name() + ' ' + N.name() + ' '
+				+ "refs/heads/s" + '\0'
+				+ BasePackPushConnection.CAPABILITY_REPORT_STATUS);
+		inPckLine.end();
+		pack.writeTo(inBuf, PM);
+		return inBuf;
+	}
+
+	@Test
 	public void testUsingUnknownTreeFails() throws Exception {
-		TestRepository<Repository> s = new TestRepository<Repository>(src);
+		TestRepository<Repository> s = new TestRepository<>(src);
 		RevCommit N = s.commit().parent(B).add("q", s.blob("a")).create();
 		RevTree t = s.parseBody(N).getTree();
 
@@ -490,7 +537,7 @@ public class ReceivePackAdvertiseRefsHookTest extends LocalDiskRepositoryTestCas
 		assertSame(PacketLineIn.END, r.readString());
 	}
 
-	private void packHeader(TemporaryBuffer.Heap tinyPack, int cnt)
+	private static void packHeader(TemporaryBuffer.Heap tinyPack, int cnt)
 			throws IOException {
 		final byte[] hdr = new byte[8];
 		NB.encodeInt32(hdr, 0, 2);
@@ -500,7 +547,7 @@ public class ReceivePackAdvertiseRefsHookTest extends LocalDiskRepositoryTestCas
 		tinyPack.write(hdr, 0, 8);
 	}
 
-	private void copy(TemporaryBuffer.Heap tinyPack, ObjectLoader ldr)
+	private static void copy(TemporaryBuffer.Heap tinyPack, ObjectLoader ldr)
 			throws IOException {
 		final byte[] buf = new byte[64];
 		final byte[] content = ldr.getCachedBytes();
@@ -519,7 +566,8 @@ public class ReceivePackAdvertiseRefsHookTest extends LocalDiskRepositoryTestCas
 		deflate(tinyPack, content);
 	}
 
-	private void deflate(TemporaryBuffer.Heap tinyPack, final byte[] content)
+	private static void deflate(TemporaryBuffer.Heap tinyPack,
+			final byte[] content)
 			throws IOException {
 		final Deflater deflater = new Deflater();
 		final byte[] buf = new byte[128];
@@ -532,7 +580,7 @@ public class ReceivePackAdvertiseRefsHookTest extends LocalDiskRepositoryTestCas
 		} while (!deflater.finished());
 	}
 
-	private void digest(TemporaryBuffer.Heap buf) throws IOException {
+	private static void digest(TemporaryBuffer.Heap buf) throws IOException {
 		MessageDigest md = Constants.newMessageDigest();
 		md.update(buf.toByteArray());
 		buf.write(md.digest());
@@ -542,8 +590,9 @@ public class ReceivePackAdvertiseRefsHookTest extends LocalDiskRepositoryTestCas
 
 	@After
 	public void release() {
-		if (inserter != null)
-			inserter.release();
+		if (inserter != null) {
+			inserter.close();
+		}
 	}
 
 	private void openPack(TemporaryBuffer.Heap buf) throws IOException {
@@ -562,8 +611,9 @@ public class ReceivePackAdvertiseRefsHookTest extends LocalDiskRepositoryTestCas
 	}
 
 	private static final class HidePrivateHook extends AbstractAdvertiseRefsHook {
+		@Override
 		public Map<String, Ref> getAdvertisedRefs(Repository r, RevWalk revWalk) {
-			Map<String, Ref> refs = new HashMap<String, Ref>(r.getAllRefs());
+			Map<String, Ref> refs = new HashMap<>(r.getAllRefs());
 			assertNotNull(refs.remove(R_PRIVATE));
 			return refs;
 		}

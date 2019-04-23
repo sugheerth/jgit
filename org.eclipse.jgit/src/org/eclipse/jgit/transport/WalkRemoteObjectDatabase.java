@@ -57,12 +57,12 @@ import java.util.Map;
 
 import org.eclipse.jgit.errors.TransportException;
 import org.eclipse.jgit.internal.JGitText;
+import org.eclipse.jgit.internal.storage.file.RefDirectory;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.ObjectIdRef;
 import org.eclipse.jgit.lib.ProgressMonitor;
 import org.eclipse.jgit.lib.Ref;
-import org.eclipse.jgit.storage.file.RefDirectory;
 import org.eclipse.jgit.util.IO;
 
 /**
@@ -76,13 +76,13 @@ import org.eclipse.jgit.util.IO;
  * independent {@link WalkFetchConnection}.
  */
 abstract class WalkRemoteObjectDatabase {
-	static final String ROOT_DIR = "../";
+	static final String ROOT_DIR = "../"; //$NON-NLS-1$
 
-	static final String INFO_PACKS = "info/packs";
+	static final String INFO_PACKS = "info/packs"; //$NON-NLS-1$
 
-	static final String INFO_ALTERNATES = "info/alternates";
+	static final String INFO_ALTERNATES = "info/alternates"; //$NON-NLS-1$
 
-	static final String INFO_HTTP_ALTERNATES = "info/http-alternates";
+	static final String INFO_HTTP_ALTERNATES = "info/http-alternates"; //$NON-NLS-1$
 
 	static final String INFO_REFS = ROOT_DIR + Constants.INFO_REFS;
 
@@ -133,6 +133,9 @@ abstract class WalkRemoteObjectDatabase {
 	 * Callers such as {@link WalkFetchConnection} are prepared to handle this
 	 * by validating the content received, and assuming content that fails to
 	 * match its hash is an incorrectly phrased FileNotFoundException.
+	 * <p>
+	 * This method is recommended for already compressed files like loose objects
+	 * and pack files. For text files, see {@link #openReader(String)}.
 	 *
 	 * @param path
 	 *            location of the file to read, relative to this objects
@@ -292,7 +295,7 @@ abstract class WalkRemoteObjectDatabase {
 	 *             deletion is not supported, or deletion failed.
 	 */
 	void deleteRefLog(final String name) throws IOException {
-		deleteFile(ROOT_DIR + Constants.LOGS + "/" + name);
+		deleteFile(ROOT_DIR + Constants.LOGS + "/" + name); //$NON-NLS-1$
 	}
 
 	/**
@@ -336,7 +339,7 @@ abstract class WalkRemoteObjectDatabase {
 	void writeInfoPacks(final Collection<String> packNames) throws IOException {
 		final StringBuilder w = new StringBuilder();
 		for (final String n : packNames) {
-			w.append("P ");
+			w.append("P "); //$NON-NLS-1$
 			w.append(n);
 			w.append('\n');
 		}
@@ -346,8 +349,8 @@ abstract class WalkRemoteObjectDatabase {
 	/**
 	 * Open a buffered reader around a file.
 	 * <p>
-	 * This is shorthand for calling {@link #open(String)} and then wrapping it
-	 * in a reader suitable for line oriented files like the alternates list.
+	 * This method is suitable for for reading line-oriented resources like
+	 * <code>info/packs</code>, <code>info/refs</code>, and the alternates list.
 	 *
 	 * @return a stream to read from the file. Never null.
 	 * @param path
@@ -393,13 +396,13 @@ abstract class WalkRemoteObjectDatabase {
 			throws IOException {
 		final BufferedReader br = openReader(listPath);
 		try {
-			final Collection<WalkRemoteObjectDatabase> alts = new ArrayList<WalkRemoteObjectDatabase>();
+			final Collection<WalkRemoteObjectDatabase> alts = new ArrayList<>();
 			for (;;) {
 				String line = br.readLine();
 				if (line == null)
 					break;
-				if (!line.endsWith("/"))
-					line += "/";
+				if (!line.endsWith("/")) //$NON-NLS-1$
+					line += "/"; //$NON-NLS-1$
 				alts.add(openAlternate(line));
 			}
 			return alts;

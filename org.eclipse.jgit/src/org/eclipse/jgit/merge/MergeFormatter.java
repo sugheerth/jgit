@@ -49,7 +49,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.eclipse.jgit.diff.RawText;
-import org.eclipse.jgit.merge.MergeChunk.ConflictState;
 
 /**
  * A class to convert merge results into a Git conformant textual presentation
@@ -68,7 +67,7 @@ public class MergeFormatter {
 	 *            the merge result which should be presented
 	 * @param seqName
 	 *            When a conflict is reported each conflicting range will get a
-	 *            name. This name is following the "<<<<<<< " or ">>>>>>> "
+	 *            name. This name is following the "&lt;&lt;&lt;&lt;&lt;&lt;&lt; " or "&gt;&gt;&gt;&gt;&gt;&gt;&gt; "
 	 *            conflict markers. The names for the sequences are given in
 	 *            this list
 	 * @param charsetName
@@ -78,47 +77,7 @@ public class MergeFormatter {
 	 */
 	public void formatMerge(OutputStream out, MergeResult<RawText> res,
 			List<String> seqName, String charsetName) throws IOException {
-		String lastConflictingName = null; // is set to non-null whenever we are
-		// in a conflict
-		boolean threeWayMerge = (res.getSequences().size() == 3);
-		for (MergeChunk chunk : res) {
-			RawText seq = res.getSequences().get(chunk.getSequenceIndex());
-			if (lastConflictingName != null
-					&& chunk.getConflictState() != ConflictState.NEXT_CONFLICTING_RANGE) {
-				// found the end of an conflict
-				out.write((">>>>>>> " + lastConflictingName + "\n").getBytes(charsetName));
-				lastConflictingName = null;
-			}
-			if (chunk.getConflictState() == ConflictState.FIRST_CONFLICTING_RANGE) {
-				// found the start of an conflict
-				out.write(("<<<<<<< " + seqName.get(chunk.getSequenceIndex()) +
-						"\n").getBytes(charsetName));
-				lastConflictingName = seqName.get(chunk.getSequenceIndex());
-			} else if (chunk.getConflictState() == ConflictState.NEXT_CONFLICTING_RANGE) {
-				// found another conflicting chunk
-
-				/*
-				 * In case of a non-three-way merge I'll add the name of the
-				 * conflicting chunk behind the equal signs. I also append the
-				 * name of the last conflicting chunk after the ending
-				 * greater-than signs. If somebody knows a better notation to
-				 * present non-three-way merges - feel free to correct here.
-				 */
-				lastConflictingName = seqName.get(chunk.getSequenceIndex());
-				out.write((threeWayMerge ? "=======\n" : "======= "
-						+ lastConflictingName + "\n").getBytes(charsetName));
-			}
-			// the lines with conflict-metadata are written. Now write the chunk
-			for (int i = chunk.getBegin(); i < chunk.getEnd(); i++) {
-				seq.writeLine(out, i);
-				out.write('\n');
-			}
-		}
-		// one possible leftover: if the merge result ended with a conflict we
-		// have to close the last conflict here
-		if (lastConflictingName != null) {
-			out.write((">>>>>>> " + lastConflictingName + "\n").getBytes(charsetName));
-		}
+		new MergeFormatterPass(out, res, seqName, charsetName).formatMerge();
 	}
 
 	/**
@@ -143,9 +102,10 @@ public class MergeFormatter {
 	 *            metadata
 	 * @throws IOException
 	 */
+	@SuppressWarnings("unchecked")
 	public void formatMerge(OutputStream out, MergeResult res, String baseName,
 			String oursName, String theirsName, String charsetName) throws IOException {
-		List<String> names = new ArrayList<String>(3);
+		List<String> names = new ArrayList<>(3);
 		names.add(baseName);
 		names.add(oursName);
 		names.add(theirsName);

@@ -63,7 +63,7 @@ import org.eclipse.jgit.lib.FileMode;
  * merge which introduces changes not in any ancestor.
  */
 public class CombinedFileHeader extends FileHeader {
-	private static final byte[] MODE = encodeASCII("mode ");
+	private static final byte[] MODE = encodeASCII("mode "); //$NON-NLS-1$
 
 	private AbbreviatedObjectId[] oldIds;
 
@@ -183,7 +183,7 @@ public class CombinedFileHeader extends FileHeader {
 	protected void parseIndexLine(int ptr, final int eol) {
 		// "index $asha1,$bsha1..$csha1"
 		//
-		final List<AbbreviatedObjectId> ids = new ArrayList<AbbreviatedObjectId>();
+		final List<AbbreviatedObjectId> ids = new ArrayList<>();
 		while (ptr < eol) {
 			final int comma = nextLF(buf, ptr, ',');
 			if (eol <= comma)

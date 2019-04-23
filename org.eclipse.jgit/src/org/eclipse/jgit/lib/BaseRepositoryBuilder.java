@@ -64,9 +64,9 @@ import java.util.List;
 import org.eclipse.jgit.errors.ConfigInvalidException;
 import org.eclipse.jgit.errors.RepositoryNotFoundException;
 import org.eclipse.jgit.internal.JGitText;
+import org.eclipse.jgit.internal.storage.file.FileRepository;
 import org.eclipse.jgit.lib.RepositoryCache.FileKey;
 import org.eclipse.jgit.storage.file.FileBasedConfig;
-import org.eclipse.jgit.storage.file.FileRepository;
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder;
 import org.eclipse.jgit.util.FS;
 import org.eclipse.jgit.util.IO;
@@ -100,7 +100,7 @@ public class BaseRepositoryBuilder<B extends BaseRepositoryBuilder, R extends Re
 				&& ref[7] == ' ';
 	}
 
-	private static File getSymRef(File workTree, File dotGit)
+	private static File getSymRef(File workTree, File dotGit, FS fs)
 			throws IOException {
 		byte[] content = IO.readFully(dotGit);
 		if (!isSymRef(content))
@@ -109,14 +109,15 @@ public class BaseRepositoryBuilder<B extends BaseRepositoryBuilder, R extends Re
 
 		int pathStart = 8;
 		int lineEnd = RawParseUtils.nextLF(content, pathStart);
-		if (content[lineEnd - 1] == '\n')
+		while (content[lineEnd - 1] == '\n' ||
+		       (content[lineEnd - 1] == '\r' && SystemReader.getInstance().isWindows()))
 			lineEnd--;
 		if (lineEnd == pathStart)
 			throw new IOException(MessageFormat.format(
 					JGitText.get().invalidGitdirRef, dotGit.getAbsolutePath()));
 
 		String gitdirPath = RawParseUtils.decode(content, pathStart, lineEnd);
-		File gitdirFile = new File(gitdirPath);
+		File gitdirFile = fs.resolve(workTree, gitdirPath);
 		if (gitdirFile.isAbsolute())
 			return gitdirFile;
 		else
@@ -217,7 +218,7 @@ public class BaseRepositoryBuilder<B extends BaseRepositoryBuilder, R extends Re
 	public B addAlternateObjectDirectory(File other) {
 		if (other != null) {
 			if (alternateObjectDirectories == null)
-				alternateObjectDirectories = new LinkedList<File>();
+				alternateObjectDirectories = new LinkedList<>();
 			alternateObjectDirectories.add(other);
 		}
 		return self();
@@ -428,7 +429,7 @@ public class BaseRepositoryBuilder<B extends BaseRepositoryBuilder, R extends Re
 	public B addCeilingDirectory(File root) {
 		if (root != null) {
 			if (ceilingDirectories == null)
-				ceilingDirectories = new LinkedList<File>();
+				ceilingDirectories = new LinkedList<>();
 			ceilingDirectories.add(root);
 		}
 		return self();
@@ -487,7 +488,7 @@ public class BaseRepositoryBuilder<B extends BaseRepositoryBuilder, R extends Re
 	 */
 	public B findGitDir() {
 		if (getGitDir() == null)
-			findGitDir(new File("").getAbsoluteFile());
+			findGitDir(new File("").getAbsoluteFile()); //$NON-NLS-1$
 		return self();
 	}
 
@@ -514,13 +515,17 @@ public class BaseRepositoryBuilder<B extends BaseRepositoryBuilder, R extends Re
 				if (FileKey.isGitRepository(dir, tryFS)) {
 					setGitDir(dir);
 					break;
-				} else if (dir.isFile())
+				} else if (dir.isFile()) {
 					try {
-						setGitDir(getSymRef(current, dir));
+						setGitDir(getSymRef(current, dir, tryFS));
 						break;
 					} catch (IOException ignored) {
 						// Continue searching if gitdir ref isn't found
 					}
+				} else if (FileKey.isGitRepository(current, tryFS)) {
+					setGitDir(current);
+					break;
+				}
 
 				current = current.getParentFile();
 				if (current != null && ceilingDirectories != null
@@ -561,14 +566,16 @@ public class BaseRepositoryBuilder<B extends BaseRepositoryBuilder, R extends Re
 	 * based on other options. If insufficient information is available, an
 	 * exception is thrown to the caller.
 	 *
-	 * @return a repository matching this configuration.
+	 * @return a repository matching this configuration. The caller is
+	 *         responsible to close the repository instance when it is no longer
+	 *         needed.
 	 * @throws IllegalArgumentException
 	 *             insufficient parameters were set.
 	 * @throws IOException
 	 *             the repository could not be accessed to configure the rest of
 	 *             the builder's parameters.
 	 */
-	@SuppressWarnings("unchecked")
+	@SuppressWarnings({ "unchecked", "resource" })
 	public R build() throws IOException {
 		R repo = (R) new FileRepository(setup());
 		if (isMustExist() && !repo.getObjectDatabase().exists())
@@ -597,7 +604,7 @@ public class BaseRepositoryBuilder<B extends BaseRepositoryBuilder, R extends Re
 			if (!dotGit.isFile())
 				setGitDir(dotGit);
 			else
-				setGitDir(getSymRef(getWorkTree(), dotGit));
+				setGitDir(getSymRef(getWorkTree(), dotGit, safeFS()));
 		}
 	}
 
@@ -628,7 +635,7 @@ public class BaseRepositoryBuilder<B extends BaseRepositoryBuilder, R extends Re
 			if (getGitDir() == null)
 				setGitDir(getWorkTree().getParentFile());
 			if (getIndexFile() == null)
-				setIndexFile(new File(getGitDir(), "index"));
+				setIndexFile(new File(getGitDir(), "index")); //$NON-NLS-1$
 		}
 	}
 
@@ -640,7 +647,7 @@ public class BaseRepositoryBuilder<B extends BaseRepositoryBuilder, R extends Re
 	 */
 	protected void setupInternals() throws IOException {
 		if (getObjectDirectory() == null && getGitDir() != null)
-			setObjectDirectory(safeFS().resolve(getGitDir(), "objects"));
+			setObjectDirectory(safeFS().resolve(getGitDir(), "objects")); //$NON-NLS-1$
 	}
 
 	/**
@@ -695,7 +702,7 @@ public class BaseRepositoryBuilder<B extends BaseRepositoryBuilder, R extends Re
 		String path = cfg.getString(CONFIG_CORE_SECTION, null,
 				CONFIG_KEY_WORKTREE);
 		if (path != null)
-			return safeFS().resolve(getGitDir(), path);
+			return safeFS().resolve(getGitDir(), path).getCanonicalFile();
 
 		// If core.bare is set, honor its value. Assume workTree is
 		// the parent directory of the repository.

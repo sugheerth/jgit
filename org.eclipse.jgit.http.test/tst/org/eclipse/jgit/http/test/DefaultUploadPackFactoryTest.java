@@ -49,6 +49,7 @@ import static org.junit.Assert.fail;
 
 import java.io.IOException;
 
+import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletRequestWrapper;
 
 import org.eclipse.jetty.server.Request;
@@ -66,8 +67,9 @@ import org.junit.Test;
 public class DefaultUploadPackFactoryTest extends LocalDiskRepositoryTestCase {
 	private Repository db;
 
-	private UploadPackFactory factory;
+	private UploadPackFactory<HttpServletRequest> factory;
 
+	@Override
 	@Before
 	public void setUp() throws Exception {
 		super.setUp();
@@ -76,9 +78,10 @@ public class DefaultUploadPackFactoryTest extends LocalDiskRepositoryTestCase {
 		factory = new DefaultUploadPackFactory();
 	}
 
+	@SuppressWarnings("unchecked")
 	@Test
 	public void testDisabledSingleton() throws ServiceNotAuthorizedException {
-		factory = UploadPackFactory.DISABLED;
+		factory = (UploadPackFactory<HttpServletRequest>) UploadPackFactory.DISABLED;
 
 		try {
 			factory.create(new R(null, "localhost"), db);
@@ -159,7 +162,7 @@ public class DefaultUploadPackFactoryTest extends LocalDiskRepositoryTestCase {
 		private final String host;
 
 		R(final String user, final String host) {
-			super(new Request() /* can't pass null, sigh */);
+			super(new Request(null, null) /* can't pass null, sigh */);
 			this.user = user;
 			this.host = host;
 		}

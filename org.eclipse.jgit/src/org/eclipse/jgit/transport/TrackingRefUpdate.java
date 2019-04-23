@@ -52,12 +52,13 @@ import org.eclipse.jgit.lib.RefUpdate;
 /** Update of a locally stored tracking branch. */
 public class TrackingRefUpdate {
 	private final String remoteName;
-	private final String localName;
-	private boolean forceUpdate;
-	private ObjectId oldObjectId;
-	private ObjectId newObjectId;
+	final String localName;
+	boolean forceUpdate;
+	ObjectId oldObjectId;
+	ObjectId newObjectId;
 
 	private RefUpdate.Result result;
+	private ReceiveCommand cmd;
 
 	TrackingRefUpdate(
 			boolean canForceUpdate,
@@ -130,12 +131,18 @@ public class TrackingRefUpdate {
 		this.result = result;
 	}
 
-	ReceiveCommand asReceiveCommand() {
-		return new Command();
+	/**
+	 * @return this update wrapped by a ReceiveCommand.
+	 * @since 3.4
+	 */
+	public ReceiveCommand asReceiveCommand() {
+		if (cmd == null)
+			cmd = new Command();
+		return cmd;
 	}
 
 	final class Command extends ReceiveCommand {
-		private Command() {
+		Command() {
 			super(oldObjectId, newObjectId, localName);
 		}
 
@@ -192,5 +199,23 @@ public class TrackingRefUpdate {
 				return RefUpdate.Result.LOCK_FAILURE;
 			}
 		}
+	}
+
+	@SuppressWarnings("nls")
+	@Override
+	public String toString() {
+		StringBuilder sb = new StringBuilder();
+		sb.append("TrackingRefUpdate[");
+		sb.append(remoteName);
+		sb.append(" -> ");
+		sb.append(localName);
+		if (forceUpdate)
+			sb.append(" (forced)");
+		sb.append(" ");
+		sb.append(oldObjectId == null ? "" : oldObjectId.abbreviate(7).name());
+		sb.append("..");
+		sb.append(newObjectId == null ? "" : newObjectId.abbreviate(7).name());
+		sb.append("]");
+		return sb.toString();
 	}
 }

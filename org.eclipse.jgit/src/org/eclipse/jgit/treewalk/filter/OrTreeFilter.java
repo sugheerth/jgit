@@ -126,7 +126,25 @@ public abstract class OrTreeFilter extends TreeFilter {
 		public boolean include(final TreeWalk walker)
 				throws MissingObjectException, IncorrectObjectTypeException,
 				IOException {
-			return a.include(walker) || b.include(walker);
+			return matchFilter(walker) <= 0;
+		}
+
+		@Override
+		public int matchFilter(TreeWalk walker)
+				throws MissingObjectException, IncorrectObjectTypeException,
+				IOException {
+			final int ra = a.matchFilter(walker);
+			if (ra == 0) {
+				return 0;
+			}
+			final int rb = b.matchFilter(walker);
+			if (rb == 0) {
+				return 0;
+			}
+			if (ra == -1 || rb == -1) {
+				return -1;
+			}
+			return 1;
 		}
 
 		@Override
@@ -139,6 +157,7 @@ public abstract class OrTreeFilter extends TreeFilter {
 			return new Binary(a.clone(), b.clone());
 		}
 
+		@SuppressWarnings("nls")
 		@Override
 		public String toString() {
 			return "(" + a.toString() + " OR " + b.toString() + ")";
@@ -156,11 +175,24 @@ public abstract class OrTreeFilter extends TreeFilter {
 		public boolean include(final TreeWalk walker)
 				throws MissingObjectException, IncorrectObjectTypeException,
 				IOException {
+			return matchFilter(walker) <= 0;
+		}
+
+		@Override
+		public int matchFilter(TreeWalk walker)
+				throws MissingObjectException, IncorrectObjectTypeException,
+				IOException {
+			int m = 1;
 			for (final TreeFilter f : subfilters) {
-				if (f.include(walker))
-					return true;
+				int r = f.matchFilter(walker);
+				if (r == 0) {
+					return 0;
+				}
+				if (r == -1) {
+					m = -1;
+				}
 			}
-			return false;
+			return m;
 		}
 
 		@Override
@@ -182,13 +214,13 @@ public abstract class OrTreeFilter extends TreeFilter {
 		@Override
 		public String toString() {
 			final StringBuilder r = new StringBuilder();
-			r.append("(");
+			r.append("("); //$NON-NLS-1$
 			for (int i = 0; i < subfilters.length; i++) {
 				if (i > 0)
-					r.append(" OR ");
+					r.append(" OR "); //$NON-NLS-1$
 				r.append(subfilters[i].toString());
 			}
-			r.append(")");
+			r.append(")"); //$NON-NLS-1$
 			return r.toString();
 		}
 	}

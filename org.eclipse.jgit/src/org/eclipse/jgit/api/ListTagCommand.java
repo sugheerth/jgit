@@ -74,22 +74,21 @@ public class ListTagCommand extends GitCommand<List<Ref>> {
 	/**
 	 * @return the tags available
 	 */
+	@Override
 	public List<Ref> call() throws GitAPIException {
 		checkCallable();
 		Map<String, Ref> refList;
-		List<Ref> tags = new ArrayList<Ref>();
-		RevWalk revWalk = new RevWalk(repo);
-		try {
+		List<Ref> tags = new ArrayList<>();
+		try (RevWalk revWalk = new RevWalk(repo)) {
 			refList = repo.getRefDatabase().getRefs(Constants.R_TAGS);
 			for (Ref ref : refList.values()) {
 				tags.add(ref);
 			}
 		} catch (IOException e) {
 			throw new JGitInternalException(e.getMessage(), e);
-		} finally {
-			revWalk.release();
 		}
 		Collections.sort(tags, new Comparator<Ref>() {
+			@Override
 			public int compare(Ref o1, Ref o2) {
 				return o1.getName().compareTo(o2.getName());
 			}

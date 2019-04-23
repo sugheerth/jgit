@@ -54,9 +54,9 @@ import org.eclipse.jgit.errors.ConfigInvalidException;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Repository;
-import org.eclipse.jgit.submodule.SubmoduleWalk;
 import org.eclipse.jgit.submodule.SubmoduleStatus;
 import org.eclipse.jgit.submodule.SubmoduleStatusType;
+import org.eclipse.jgit.submodule.SubmoduleWalk;
 import org.eclipse.jgit.treewalk.filter.PathFilterGroup;
 
 /**
@@ -76,13 +76,14 @@ public class SubmoduleStatusCommand extends
 	 */
 	public SubmoduleStatusCommand(final Repository repo) {
 		super(repo);
-		paths = new ArrayList<String>();
+		paths = new ArrayList<>();
 	}
 
 	/**
 	 * Add repository-relative submodule path to limit status reporting to
 	 *
 	 * @param path
+	 *            (with <code>/</code> as separator)
 	 * @return this command
 	 */
 	public SubmoduleStatusCommand addPath(final String path) {
@@ -90,14 +91,14 @@ public class SubmoduleStatusCommand extends
 		return this;
 	}
 
+	@Override
 	public Map<String, SubmoduleStatus> call() throws GitAPIException {
 		checkCallable();
 
-		try {
-			SubmoduleWalk generator = SubmoduleWalk.forIndex(repo);
+		try (SubmoduleWalk generator = SubmoduleWalk.forIndex(repo)) {
 			if (!paths.isEmpty())
 				generator.setFilter(PathFilterGroup.createFromStrings(paths));
-			Map<String, SubmoduleStatus> statuses = new HashMap<String, SubmoduleStatus>();
+			Map<String, SubmoduleStatus> statuses = new HashMap<>();
 			while (generator.next()) {
 				SubmoduleStatus status = getStatus(generator);
 				statuses.put(status.getPath(), status);

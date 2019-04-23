@@ -80,14 +80,17 @@ abstract class SmartServiceInfoRefs implements Filter {
 		this.filters = filters.toArray(new Filter[filters.size()]);
 	}
 
+	@Override
 	public void init(FilterConfig config) throws ServletException {
 		// Do nothing.
 	}
 
+	@Override
 	public void destroy() {
 		// Do nothing.
 	}
 
+	@Override
 	public void doFilter(ServletRequest request, ServletResponse response,
 			FilterChain chain) throws IOException, ServletException {
 		final HttpServletRequest req = (HttpServletRequest) request;
@@ -98,10 +101,10 @@ abstract class SmartServiceInfoRefs implements Filter {
 			try {
 				begin(req, db);
 			} catch (ServiceNotAuthorizedException e) {
-				res.sendError(SC_UNAUTHORIZED);
+				res.sendError(SC_UNAUTHORIZED, e.getMessage());
 				return;
 			} catch (ServiceNotEnabledException e) {
-				sendError(req, res, SC_FORBIDDEN);
+				sendError(req, res, SC_FORBIDDEN, e.getMessage());
 				return;
 			}
 
@@ -122,7 +125,7 @@ abstract class SmartServiceInfoRefs implements Filter {
 			throws IOException {
 		final HttpServletRequest req = (HttpServletRequest) request;
 		final HttpServletResponse res = (HttpServletResponse) response;
-		final SmartOutputStream buf = new SmartOutputStream(req, res);
+		final SmartOutputStream buf = new SmartOutputStream(req, res, true);
 		try {
 			res.setContentType(infoRefsResultType(svc));
 
@@ -132,16 +135,14 @@ abstract class SmartServiceInfoRefs implements Filter {
 			advertise(req, new PacketLineOutRefAdvertiser(out));
 			buf.close();
 		} catch (ServiceNotAuthorizedException e) {
-			res.sendError(SC_UNAUTHORIZED);
-
+			res.sendError(SC_UNAUTHORIZED, e.getMessage());
 		} catch (ServiceNotEnabledException e) {
-			sendError(req, res, SC_FORBIDDEN);
-
+			sendError(req, res, SC_FORBIDDEN, e.getMessage());
 		} catch (ServiceMayNotContinueException e) {
 			if (e.isOutput())
 				buf.close();
 			else
-				sendError(req, res, SC_FORBIDDEN, e.getMessage());
+				sendError(req, res, e.getStatusCode(), e.getMessage());
 		}
 	}
 
@@ -156,6 +157,7 @@ abstract class SmartServiceInfoRefs implements Filter {
 	private class Chain implements FilterChain {
 		private int filterIdx;
 
+		@Override
 		public void doFilter(ServletRequest req, ServletResponse rsp)
 				throws IOException, ServletException {
 			if (filterIdx < filters.length)

@@ -61,6 +61,7 @@ import static org.eclipse.jgit.http.server.ServletUtils.getRepository;
 import static org.eclipse.jgit.util.HttpSupport.HDR_USER_AGENT;
 
 import java.io.IOException;
+import java.text.MessageFormat;
 import java.util.List;
 
 import javax.servlet.Filter;
@@ -74,10 +75,11 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
 import org.eclipse.jgit.lib.Repository;
+import org.eclipse.jgit.transport.InternalHttpServerGlue;
 import org.eclipse.jgit.transport.RefAdvertiser.PacketLineOutRefAdvertiser;
+import org.eclipse.jgit.transport.ServiceMayNotContinueException;
 import org.eclipse.jgit.transport.UploadPack;
 import org.eclipse.jgit.transport.UploadPackInternalServerErrorException;
-import org.eclipse.jgit.transport.ServiceMayNotContinueException;
 import org.eclipse.jgit.transport.resolver.ServiceNotAuthorizedException;
 import org.eclipse.jgit.transport.resolver.ServiceNotEnabledException;
 import org.eclipse.jgit.transport.resolver.UploadPackFactory;
@@ -100,6 +102,9 @@ class UploadPackServlet extends HttpServlet {
 				throws IOException, ServiceNotEnabledException,
 				ServiceNotAuthorizedException {
 			UploadPack up = uploadPackFactory.create(req, db);
+			InternalHttpServerGlue.setPeerUserAgent(
+					up,
+					req.getHeader(HDR_USER_AGENT));
 			req.setAttribute(ATTRIBUTE_HANDLER, up);
 		}
 
@@ -112,7 +117,7 @@ class UploadPackServlet extends HttpServlet {
 				up.setBiDirectionalPipe(false);
 				up.sendAdvertisedRefs(pck);
 			} finally {
-				up.getRevWalk().release();
+				up.getRevWalk().close();
 			}
 		}
 	}
@@ -124,6 +129,7 @@ class UploadPackServlet extends HttpServlet {
 			this.uploadPackFactory = uploadPackFactory;
 		}
 
+		@Override
 		public void doFilter(ServletRequest request, ServletResponse response,
 				FilterChain chain) throws IOException, ServletException {
 			HttpServletRequest req = (HttpServletRequest) request;
@@ -132,11 +138,10 @@ class UploadPackServlet extends HttpServlet {
 			try {
 				rp = uploadPackFactory.create(req, getRepository(req));
 			} catch (ServiceNotAuthorizedException e) {
-				rsp.sendError(SC_UNAUTHORIZED);
+				rsp.sendError(SC_UNAUTHORIZED, e.getMessage());
 				return;
-
 			} catch (ServiceNotEnabledException e) {
-				sendError(req, rsp, SC_FORBIDDEN);
+				sendError(req, rsp, SC_FORBIDDEN, e.getMessage());
 				return;
 			}
 
@@ -148,10 +153,12 @@ class UploadPackServlet extends HttpServlet {
 			}
 		}
 
+		@Override
 		public void init(FilterConfig filterConfig) throws ServletException {
 			// Nothing.
 		}
 
+		@Override
 		public void destroy() {
 			// Nothing.
 		}
@@ -172,7 +179,7 @@ class UploadPackServlet extends HttpServlet {
 			return;
 		}
 
-		SmartOutputStream out = new SmartOutputStream(req, rsp) {
+		SmartOutputStream out = new SmartOutputStream(req, rsp, false) {
 			@Override
 			public void flush() throws IOException {
 				doFlush();
@@ -193,25 +200,29 @@ class UploadPackServlet extends HttpServlet {
 				out.close();
 			} else if (!rsp.isCommitted()) {
 				rsp.reset();
-				sendError(req, rsp, SC_FORBIDDEN, e.getMessage());
+				sendError(req, rsp, e.getStatusCode(), e.getMessage());
 			}
 			return;
 
 		} catch (UploadPackInternalServerErrorException e) {
 			// Special case exception, error message was sent to client.
-			getServletContext().log(
-					HttpServerText.get().internalErrorDuringUploadPack,
-					e.getCause());
+			log(up.getRepository(), e.getCause());
 			consumeRequestBody(req);
 			out.close();
 
 		} catch (Throwable e) {
-			getServletContext().log(HttpServerText.get().internalErrorDuringUploadPack, e);
+			log(up.getRepository(), e);
 			if (!rsp.isCommitted()) {
 				rsp.reset();
 				sendError(req, rsp, SC_INTERNAL_SERVER_ERROR);
 			}
 			return;
 		}
+	}
+
+	private void log(Repository git, Throwable e) {
+		getServletContext().log(MessageFormat.format(
+				HttpServerText.get().internalErrorDuringUploadPack,
+				ServletUtils.identify(git)), e);
 	}
 }

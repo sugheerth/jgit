@@ -49,15 +49,21 @@ import static org.eclipse.jgit.transport.ReceiveCommand.Result.REJECTED_OTHER_RE
 
 import java.io.IOException;
 import java.text.MessageFormat;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.concurrent.TimeoutException;
 
 import org.eclipse.jgit.internal.JGitText;
+import org.eclipse.jgit.lib.RefUpdate.Result;
 import org.eclipse.jgit.revwalk.RevWalk;
+import org.eclipse.jgit.transport.PushCertificate;
 import org.eclipse.jgit.transport.ReceiveCommand;
+import org.eclipse.jgit.util.time.ProposedTimestamp;
 
 /**
  * Batch of reference updates to be applied to a repository.
@@ -66,6 +72,17 @@ import org.eclipse.jgit.transport.ReceiveCommand;
  * server is making changes to more than one reference at a time.
  */
 public class BatchRefUpdate {
+	/**
+	 * Maximum delay the calling thread will tolerate while waiting for a
+	 * {@code MonotonicClock} to resolve associated {@link ProposedTimestamp}s.
+	 * <p>
+	 * A default of 5 seconds was chosen by guessing. A common assumption is
+	 * clock skew between machines on the same LAN using an NTP server also on
+	 * the same LAN should be under 5 seconds. 5 seconds is also not that long
+	 * for a large `git push` operation to complete.
+	 */
+	private static final Duration MAX_WAIT = Duration.ofSeconds(5);
+
 	private final RefDatabase refdb;
 
 	/** Commands to apply during this batch. */
@@ -83,6 +100,18 @@ public class BatchRefUpdate {
 	/** Should the result value be appended to {@link #refLogMessage}. */
 	private boolean refLogIncludeResult;
 
+	/** Push certificate associated with this update. */
+	private PushCertificate pushCert;
+
+	/** Whether updates should be atomic. */
+	private boolean atomic;
+
+	/** Push options associated with this update. */
+	private List<String> pushOptions;
+
+	/** Associated timestamps that should be blocked on before update. */
+	private List<ProposedTimestamp> timestamps;
+
 	/**
 	 * Initialize a new batch update.
 	 *
@@ -91,7 +120,8 @@ public class BatchRefUpdate {
 	 */
 	protected BatchRefUpdate(RefDatabase refdb) {
 		this.refdb = refdb;
-		this.commands = new ArrayList<ReceiveCommand>();
+		this.commands = new ArrayList<>();
+		this.atomic = refdb.performsAtomicTransactions();
 	}
 
 	/**
@@ -168,7 +198,7 @@ public class BatchRefUpdate {
 		if (msg == null && !appendStatus)
 			disableRefLog();
 		else if (msg == null && appendStatus) {
-			refLogMessage = "";
+			refLogMessage = ""; //$NON-NLS-1$
 			refLogIncludeResult = true;
 		} else {
 			refLogMessage = msg;
@@ -191,6 +221,63 @@ public class BatchRefUpdate {
 	/** @return true if log has been disabled by {@link #disableRefLog()}. */
 	public boolean isRefLogDisabled() {
 		return refLogMessage == null;
+	}
+
+	/**
+	 * Request that all updates in this batch be performed atomically.
+	 * <p>
+	 * When atomic updates are used, either all commands apply successfully, or
+	 * none do. Commands that might have otherwise succeeded are rejected with
+	 * {@code REJECTED_OTHER_REASON}.
+	 * <p>
+	 * This method only works if the underlying ref database supports atomic
+	 * transactions, i.e. {@link RefDatabase#performsAtomicTransactions()} returns
+	 * true. Calling this method with true if the underlying ref database does not
+	 * support atomic transactions will cause all commands to fail with {@code
+	 * REJECTED_OTHER_REASON}.
+	 *
+	 * @param atomic whether updates should be atomic.
+	 * @return {@code this}
+	 * @since 4.4
+	 */
+	public BatchRefUpdate setAtomic(boolean atomic) {
+		this.atomic = atomic;
+		return this;
+	}
+
+	/**
+	 * @return atomic whether updates should be atomic.
+	 * @since 4.4
+	 */
+	public boolean isAtomic() {
+		return atomic;
+	}
+
+	/**
+	 * Set a push certificate associated with this update.
+	 * <p>
+	 * This usually includes commands to update the refs in this batch, but is not
+	 * required to.
+	 *
+	 * @param cert
+	 *            push certificate, may be null.
+	 * @since 4.1
+	 */
+	public void setPushCertificate(PushCertificate cert) {
+		pushCert = cert;
+	}
+
+	/**
+	 * Set the push certificate associated with this update.
+	 * <p>
+	 * This usually includes commands to update the refs in this batch, but is not
+	 * required to.
+	 *
+	 * @return push certificate, may be null.
+	 * @since 4.1
+	 */
+	protected PushCertificate getPushCertificate() {
+		return pushCert;
 	}
 
 	/** @return commands this update will process. */
@@ -234,49 +321,231 @@ public class BatchRefUpdate {
 	}
 
 	/**
+	 * Gets the list of option strings associated with this update.
+	 *
+	 * @return pushOptions
+	 * @since 4.5
+	 */
+	public List<String> getPushOptions() {
+		return pushOptions;
+	}
+
+	/**
+	 * @return list of timestamps the batch must wait for.
+	 * @since 4.6
+	 */
+	public List<ProposedTimestamp> getProposedTimestamps() {
+		if (timestamps != null) {
+			return Collections.unmodifiableList(timestamps);
+		}
+		return Collections.emptyList();
+	}
+
+	/**
+	 * Request the batch to wait for the affected timestamps to resolve.
+	 *
+	 * @param ts
+	 * @return {@code this}.
+	 * @since 4.6
+	 */
+	public BatchRefUpdate addProposedTimestamp(ProposedTimestamp ts) {
+		if (timestamps == null) {
+			timestamps = new ArrayList<>(4);
+		}
+		timestamps.add(ts);
+		return this;
+	}
+
+	/**
 	 * Execute this batch update.
 	 * <p>
 	 * The default implementation of this method performs a sequential reference
 	 * update over each reference.
+	 * <p>
+	 * Implementations must respect the atomicity requirements of the underlying
+	 * database as described in {@link #setAtomic(boolean)} and
+	 * {@link RefDatabase#performsAtomicTransactions()}.
 	 *
 	 * @param walk
 	 *            a RevWalk to parse tags in case the storage system wants to
 	 *            store them pre-peeled, a common performance optimization.
-	 * @param update
+	 * @param monitor
+	 *            progress monitor to receive update status on.
+	 * @param options
+	 *            a list of option strings; set null to execute without
+	 * @throws IOException
+	 *             the database is unable to accept the update. Individual
+	 *             command status must be tested to determine if there is a
+	 *             partial failure, or a total failure.
+	 * @since 4.5
+	 */
+	public void execute(RevWalk walk, ProgressMonitor monitor,
+			List<String> options) throws IOException {
+
+		if (atomic && !refdb.performsAtomicTransactions()) {
+			for (ReceiveCommand c : commands) {
+				if (c.getResult() == NOT_ATTEMPTED) {
+					c.setResult(REJECTED_OTHER_REASON,
+							JGitText.get().atomicRefUpdatesNotSupported);
+				}
+			}
+			return;
+		}
+		if (!blockUntilTimestamps(MAX_WAIT)) {
+			return;
+		}
+
+		if (options != null) {
+			pushOptions = options;
+		}
+
+		monitor.beginTask(JGitText.get().updatingReferences, commands.size());
+		List<ReceiveCommand> commands2 = new ArrayList<>(
+				commands.size());
+		// First delete refs. This may free the name space for some of the
+		// updates.
+		for (ReceiveCommand cmd : commands) {
+			try {
+				if (cmd.getResult() == NOT_ATTEMPTED) {
+					cmd.updateType(walk);
+					switch (cmd.getType()) {
+					case CREATE:
+						commands2.add(cmd);
+						break;
+					case UPDATE:
+					case UPDATE_NONFASTFORWARD:
+						commands2.add(cmd);
+						break;
+					case DELETE:
+						RefUpdate rud = newUpdate(cmd);
+						monitor.update(1);
+						cmd.setResult(rud.delete(walk));
+					}
+				}
+			} catch (IOException err) {
+				cmd.setResult(
+						REJECTED_OTHER_REASON,
+						MessageFormat.format(JGitText.get().lockError,
+								err.getMessage()));
+			}
+		}
+		if (!commands2.isEmpty()) {
+			// What part of the name space is already taken
+			Collection<String> takenNames = new HashSet<>(refdb.getRefs(
+					RefDatabase.ALL).keySet());
+			Collection<String> takenPrefixes = getTakenPrefixes(takenNames);
+
+			// Now to the update that may require more room in the name space
+			for (ReceiveCommand cmd : commands2) {
+				try {
+					if (cmd.getResult() == NOT_ATTEMPTED) {
+						cmd.updateType(walk);
+						RefUpdate ru = newUpdate(cmd);
+						SWITCH: switch (cmd.getType()) {
+						case DELETE:
+							// Performed in the first phase
+							break;
+						case UPDATE:
+						case UPDATE_NONFASTFORWARD:
+							RefUpdate ruu = newUpdate(cmd);
+							cmd.setResult(ruu.update(walk));
+							break;
+						case CREATE:
+							for (String prefix : getPrefixes(cmd.getRefName())) {
+								if (takenNames.contains(prefix)) {
+									cmd.setResult(Result.LOCK_FAILURE);
+									break SWITCH;
+								}
+							}
+							if (takenPrefixes.contains(cmd.getRefName())) {
+								cmd.setResult(Result.LOCK_FAILURE);
+								break SWITCH;
+							}
+							ru.setCheckConflicting(false);
+							addRefToPrefixes(takenPrefixes, cmd.getRefName());
+							takenNames.add(cmd.getRefName());
+							cmd.setResult(ru.update(walk));
+						}
+					}
+				} catch (IOException err) {
+					cmd.setResult(REJECTED_OTHER_REASON, MessageFormat.format(
+							JGitText.get().lockError, err.getMessage()));
+				} finally {
+					monitor.update(1);
+				}
+			}
+		}
+		monitor.endTask();
+	}
+
+	/**
+	 * Wait for timestamps to be in the past, aborting commands on timeout.
+	 *
+	 * @param maxWait
+	 *            maximum amount of time to wait for timestamps to resolve.
+	 * @return true if timestamps were successfully waited for; false if
+	 *         commands were aborted.
+	 * @since 4.6
+	 */
+	protected boolean blockUntilTimestamps(Duration maxWait) {
+		if (timestamps == null) {
+			return true;
+		}
+		try {
+			ProposedTimestamp.blockUntil(timestamps, maxWait);
+			return true;
+		} catch (TimeoutException | InterruptedException e) {
+			String msg = JGitText.get().timeIsUncertain;
+			for (ReceiveCommand c : commands) {
+				if (c.getResult() == NOT_ATTEMPTED) {
+					c.setResult(REJECTED_OTHER_REASON, msg);
+				}
+			}
+			return false;
+		}
+	}
+
+	/**
+	 * Execute this batch update without option strings.
+	 *
+	 * @param walk
+	 *            a RevWalk to parse tags in case the storage system wants to
+	 *            store them pre-peeled, a common performance optimization.
+	 * @param monitor
 	 *            progress monitor to receive update status on.
 	 * @throws IOException
 	 *             the database is unable to accept the update. Individual
 	 *             command status must be tested to determine if there is a
 	 *             partial failure, or a total failure.
 	 */
-	public void execute(RevWalk walk, ProgressMonitor update)
+	public void execute(RevWalk walk, ProgressMonitor monitor)
 			throws IOException {
-		update.beginTask(JGitText.get().updatingReferences, commands.size());
-		for (ReceiveCommand cmd : commands) {
-			try {
-				update.update(1);
+		execute(walk, monitor, null);
+	}
 
-				if (cmd.getResult() == NOT_ATTEMPTED) {
-					cmd.updateType(walk);
-					RefUpdate ru = newUpdate(cmd);
-					switch (cmd.getType()) {
-					case DELETE:
-						cmd.setResult(ru.delete(walk));
-						continue;
+	private static Collection<String> getTakenPrefixes(
+			final Collection<String> names) {
+		Collection<String> ref = new HashSet<>();
+		for (String name : names)
+			ref.addAll(getPrefixes(name));
+		return ref;
+	}
 
-					case CREATE:
-					case UPDATE:
-					case UPDATE_NONFASTFORWARD:
-						cmd.setResult(ru.update(walk));
-						continue;
-					}
-				}
-			} catch (IOException err) {
-				cmd.setResult(REJECTED_OTHER_REASON, MessageFormat.format(
-						JGitText.get().lockError, err.getMessage()));
-			}
+	private static void addRefToPrefixes(Collection<String> prefixes,
+			String name) {
+		for (String prefix : getPrefixes(name)) {
+			prefixes.add(prefix);
 		}
-		update.endTask();
+	}
+
+	static Collection<String> getPrefixes(String s) {
+		Collection<String> ret = new HashSet<>();
+		int p1 = s.indexOf('/');
+		while (p1 > 0) {
+			ret.add(s.substring(0, p1));
+			p1 = s.indexOf('/', p1 + 1);
+		}
+		return ret;
 	}
 
 	/**
@@ -297,6 +566,7 @@ public class BatchRefUpdate {
 			ru.setRefLogIdent(refLogIdent);
 			ru.setRefLogMessage(refLogMessage, refLogIncludeResult);
 		}
+		ru.setPushCertificate(pushCert);
 		switch (cmd.getType()) {
 		case DELETE:
 			if (!ObjectId.zeroId().equals(cmd.getOldId()))
@@ -313,5 +583,25 @@ public class BatchRefUpdate {
 			ru.setNewObjectId(cmd.getNewId());
 			return ru;
 		}
+	}
+
+	@Override
+	public String toString() {
+		StringBuilder r = new StringBuilder();
+		r.append(getClass().getSimpleName()).append('[');
+		if (commands.isEmpty())
+			return r.append(']').toString();
+
+		r.append('\n');
+		for (ReceiveCommand cmd : commands) {
+			r.append("  "); //$NON-NLS-1$
+			r.append(cmd);
+			r.append("  (").append(cmd.getResult()); //$NON-NLS-1$
+			if (cmd.getMessage() != null) {
+				r.append(": ").append(cmd.getMessage()); //$NON-NLS-1$
+			}
+			r.append(")\n"); //$NON-NLS-1$
+		}
+		return r.append(']').toString();
 	}
 }

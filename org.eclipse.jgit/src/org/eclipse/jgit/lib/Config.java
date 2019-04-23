@@ -51,12 +51,19 @@
 
 package org.eclipse.jgit.lib;
 
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.IOException;
 import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.eclipse.jgit.errors.ConfigInvalidException;
 import org.eclipse.jgit.events.ConfigChangedEvent;
@@ -64,6 +71,8 @@ import org.eclipse.jgit.events.ConfigChangedListener;
 import org.eclipse.jgit.events.ListenerHandle;
 import org.eclipse.jgit.events.ListenerList;
 import org.eclipse.jgit.internal.JGitText;
+import org.eclipse.jgit.util.IO;
+import org.eclipse.jgit.util.RawParseUtils;
 import org.eclipse.jgit.util.StringUtils;
 
 
@@ -75,6 +84,7 @@ public class Config {
 	private static final long KiB = 1024;
 	private static final long MiB = 1024 * KiB;
 	private static final long GiB = 1024 * MiB;
+	private static final int MAX_DEPTH = 10;
 
 	/** the change listeners */
 	private final ListenerList listeners = new ListenerList();
@@ -112,7 +122,7 @@ public class Config {
 	 */
 	public Config(Config defaultConfig) {
 		baseConfig = defaultConfig;
-		state = new AtomicReference<ConfigSnapshot>(newState());
+		state = new AtomicReference<>(newState());
 	}
 
 	/**
@@ -134,24 +144,24 @@ public class Config {
 					r.append('"');
 					inquote = false;
 				}
-				r.append("\\n\\\n");
+				r.append("\\n\\\n"); //$NON-NLS-1$
 				lineStart = r.length();
 				break;
 
 			case '\t':
-				r.append("\\t");
+				r.append("\\t"); //$NON-NLS-1$
 				break;
 
 			case '\b':
-				r.append("\\b");
+				r.append("\\b"); //$NON-NLS-1$
 				break;
 
 			case '\\':
-				r.append("\\\\");
+				r.append("\\\\"); //$NON-NLS-1$
 				break;
 
 			case '"':
-				r.append("\\\"");
+				r.append("\\\""); //$NON-NLS-1$
 				break;
 
 			case ';':
@@ -354,7 +364,7 @@ public class Config {
 	@SuppressWarnings("unchecked")
 	private static <T> T[] allValuesOf(final T value) {
 		try {
-			return (T[]) value.getClass().getMethod("values").invoke(null);
+			return (T[]) value.getClass().getMethod("values").invoke(null); //$NON-NLS-1$
 		} catch (Exception err) {
 			String typeName = value.getClass().getName();
 			String msg = MessageFormat.format(
@@ -387,15 +397,28 @@ public class Config {
 		if (value == null)
 			return defaultValue;
 
+		if (all[0] instanceof ConfigEnum) {
+			for (T t : all) {
+				if (((ConfigEnum) t).matchConfigValue(value))
+					return t;
+			}
+		}
+
 		String n = value.replace(' ', '_');
+
+		// Because of c98abc9c0586c73ef7df4172644b7dd21c979e9d being used in
+		// the real world before its breakage was fully understood, we must
+		// also accept '-' as though it were ' '.
+		n = n.replace('-', '_');
+
 		T trueState = null;
 		T falseState = null;
 		for (T e : all) {
 			if (StringUtils.equalsIgnoreCase(e.name(), n))
 				return e;
-			else if (StringUtils.equalsIgnoreCase(e.name(), "TRUE"))
+			else if (StringUtils.equalsIgnoreCase(e.name(), "TRUE")) //$NON-NLS-1$
 				trueState = e;
-			else if (StringUtils.equalsIgnoreCase(e.name(), "FALSE"))
+			else if (StringUtils.equalsIgnoreCase(e.name(), "FALSE")) //$NON-NLS-1$
 				falseState = e;
 		}
 
@@ -412,15 +435,17 @@ public class Config {
 		}
 
 		if (subsection != null)
-			throw new IllegalArgumentException(MessageFormat.format(JGitText
-					.get().enumValueNotSupported3, section, name, value));
+			throw new IllegalArgumentException(MessageFormat.format(
+					JGitText.get().enumValueNotSupported3, section, subsection,
+					name, value));
 		else
-			throw new IllegalArgumentException(MessageFormat.format(JGitText
-					.get().enumValueNotSupported2, section, name, value));
+			throw new IllegalArgumentException(
+					MessageFormat.format(JGitText.get().enumValueNotSupported2,
+							section, name, value));
 	}
 
 	/**
-	 * Get string value
+	 * Get string value or null if not found.
 	 *
 	 * @param section
 	 *            the section
@@ -428,7 +453,7 @@ public class Config {
 	 *            the subsection for the value
 	 * @param name
 	 *            the key name
-	 * @return a String value from git config.
+	 * @return a String value from the config, <code>null</code> if not found
 	 */
 	public String getString(final String section, String subsection,
 			final String name) {
@@ -467,6 +492,123 @@ public class Config {
 		System.arraycopy(base, 0, res, 0, n);
 		System.arraycopy(self, 0, res, n, self.length);
 		return res;
+	}
+
+	/**
+	 * Parse a numerical time unit, such as "1 minute", from the configuration.
+	 *
+	 * @param section
+	 *            section the key is in.
+	 * @param subsection
+	 *            subsection the key is in, or null if not in a subsection.
+	 * @param name
+	 *            the key name.
+	 * @param defaultValue
+	 *            default value to return if no value was present.
+	 * @param wantUnit
+	 *            the units of {@code defaultValue} and the return value, as
+	 *            well as the units to assume if the value does not contain an
+	 *            indication of the units.
+	 * @return the value, or {@code defaultValue} if not set, expressed in
+	 *         {@code units}.
+	 * @since 4.5
+	 */
+	public long getTimeUnit(String section, String subsection, String name,
+			long defaultValue, TimeUnit wantUnit) {
+		String valueString = getString(section, subsection, name);
+
+		if (valueString == null) {
+			return defaultValue;
+		}
+
+		String s = valueString.trim();
+		if (s.length() == 0) {
+			return defaultValue;
+		}
+
+		if (s.startsWith("-")/* negative */) { //$NON-NLS-1$
+			throw notTimeUnit(section, subsection, name, valueString);
+		}
+
+		Matcher m = Pattern.compile("^(0|[1-9][0-9]*)\\s*(.*)$") //$NON-NLS-1$
+				.matcher(valueString);
+		if (!m.matches()) {
+			return defaultValue;
+		}
+
+		String digits = m.group(1);
+		String unitName = m.group(2).trim();
+
+		TimeUnit inputUnit;
+		int inputMul;
+
+		if (unitName.isEmpty()) {
+			inputUnit = wantUnit;
+			inputMul = 1;
+
+		} else if (match(unitName, "ms", "milliseconds")) { //$NON-NLS-1$ //$NON-NLS-2$
+			inputUnit = TimeUnit.MILLISECONDS;
+			inputMul = 1;
+
+		} else if (match(unitName, "s", "sec", "second", "seconds")) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+			inputUnit = TimeUnit.SECONDS;
+			inputMul = 1;
+
+		} else if (match(unitName, "m", "min", "minute", "minutes")) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+			inputUnit = TimeUnit.MINUTES;
+			inputMul = 1;
+
+		} else if (match(unitName, "h", "hr", "hour", "hours")) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+			inputUnit = TimeUnit.HOURS;
+			inputMul = 1;
+
+		} else if (match(unitName, "d", "day", "days")) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+			inputUnit = TimeUnit.DAYS;
+			inputMul = 1;
+
+		} else if (match(unitName, "w", "week", "weeks")) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+			inputUnit = TimeUnit.DAYS;
+			inputMul = 7;
+
+		} else if (match(unitName, "mon", "month", "months")) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+			inputUnit = TimeUnit.DAYS;
+			inputMul = 30;
+
+		} else if (match(unitName, "y", "year", "years")) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+			inputUnit = TimeUnit.DAYS;
+			inputMul = 365;
+
+		} else {
+			throw notTimeUnit(section, subsection, name, valueString);
+		}
+
+		try {
+			return wantUnit.convert(Long.parseLong(digits) * inputMul,
+					inputUnit);
+		} catch (NumberFormatException nfe) {
+			throw notTimeUnit(section, subsection, unitName, valueString);
+		}
+	}
+
+	private static boolean match(final String a, final String... cases) {
+		for (final String b : cases) {
+			if (b != null && b.equalsIgnoreCase(a)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private IllegalArgumentException notTimeUnit(String section,
+			String subsection, String name, String valueString) {
+		if (subsection != null) {
+			return new IllegalArgumentException(
+					MessageFormat.format(JGitText.get().invalidTimeUnitValue3,
+							section, subsection, name, valueString));
+		}
+		return new IllegalArgumentException(
+				MessageFormat.format(JGitText.get().invalidTimeUnitValue2,
+						section, name, valueString));
 	}
 
 	/**
@@ -510,6 +652,35 @@ public class Config {
 	 */
 	public Set<String> getNames(String section, String subsection) {
 		return getState().getNames(section, subsection);
+	}
+
+	/**
+	 * @param section
+	 *            the section
+	 * @param recursive
+	 *            if {@code true} recursively adds the names defined in all base
+	 *            configurations
+	 * @return the list of names defined for this section
+	 * @since 3.2
+	 */
+	public Set<String> getNames(String section, boolean recursive) {
+		return getState().getNames(section, null, recursive);
+	}
+
+	/**
+	 * @param section
+	 *            the section
+	 * @param subsection
+	 *            the subsection
+	 * @param recursive
+	 *            if {@code true} recursively adds the names defined in all base
+	 *            configurations
+	 * @return the list of names defined for this subsection
+	 * @since 3.2
+	 */
+	public Set<String> getNames(String section, String subsection,
+			boolean recursive) {
+		return getState().getNames(section, subsection, recursive);
 	}
 
 	/**
@@ -589,12 +760,13 @@ public class Config {
 	private String getRawString(final String section, final String subsection,
 			final String name) {
 		String[] lst = getRawStringList(section, subsection, name);
-		if (lst != null)
-			return lst[0];
-		else if (baseConfig != null)
+		if (lst != null) {
+			return lst[lst.length - 1];
+		} else if (baseConfig != null) {
 			return baseConfig.getRawString(section, subsection, name);
-		else
+		} else {
 			return null;
+		}
 	}
 
 	private String[] getRawStringList(String section, String subsection,
@@ -664,11 +836,11 @@ public class Config {
 		final String s;
 
 		if (value >= GiB && (value % GiB) == 0)
-			s = String.valueOf(value / GiB) + " g";
+			s = String.valueOf(value / GiB) + "g"; //$NON-NLS-1$
 		else if (value >= MiB && (value % MiB) == 0)
-			s = String.valueOf(value / MiB) + " m";
+			s = String.valueOf(value / MiB) + "m"; //$NON-NLS-1$
 		else if (value >= KiB && (value % KiB) == 0)
-			s = String.valueOf(value / KiB) + " k";
+			s = String.valueOf(value / KiB) + "k"; //$NON-NLS-1$
 		else
 			s = String.valueOf(value);
 
@@ -695,7 +867,7 @@ public class Config {
 	 */
 	public void setBoolean(final String section, final String subsection,
 			final String name, final boolean value) {
-		setString(section, subsection, name, value ? "true" : "false");
+		setString(section, subsection, name, value ? "true" : "false"); //$NON-NLS-1$ //$NON-NLS-2$
 	}
 
 	/**
@@ -720,7 +892,11 @@ public class Config {
 	 */
 	public <T extends Enum<?>> void setEnum(final String section,
 			final String subsection, final String name, final T value) {
-		String n = value.name().toLowerCase().replace('_', ' ');
+		String n;
+		if (value instanceof ConfigEnum)
+			n = ((ConfigEnum) value).toConfigValue();
+		else
+			n = value.name().toLowerCase(Locale.ROOT).replace('_', ' ');
 		setString(section, subsection, name, n);
 	}
 
@@ -784,7 +960,7 @@ public class Config {
 			final String section,
 			final String subsection) {
 		final int max = srcState.entryList.size();
-		final ArrayList<ConfigLine> r = new ArrayList<ConfigLine>(max);
+		final ArrayList<ConfigLine> r = new ArrayList<>(max);
 
 		boolean lastWasMatch = false;
 		for (ConfigLine e : srcState.entryList) {
@@ -807,7 +983,8 @@ public class Config {
 	 *
 	 * <pre>
 	 * [section &quot;subsection&quot;]
-	 *         name = value
+	 *         name = value1
+	 *         name = value2
 	 * </pre>
 	 *
 	 * @param section
@@ -898,7 +1075,7 @@ public class Config {
 		// for a new section header. Assume that and allocate the space.
 		//
 		final int max = src.entryList.size() + values.size() + 1;
-		final ArrayList<ConfigLine> r = new ArrayList<ConfigLine>(max);
+		final ArrayList<ConfigLine> r = new ArrayList<>(max);
 		r.addAll(src.entryList);
 		return r;
 	}
@@ -937,8 +1114,8 @@ public class Config {
 					out.append(' ');
 					String escaped = escapeValue(e.subsection);
 					// make sure to avoid double quotes here
-					boolean quoted = escaped.startsWith("\"")
-							&& escaped.endsWith("\"");
+					boolean quoted = escaped.startsWith("\"") //$NON-NLS-1$
+							&& escaped.endsWith("\""); //$NON-NLS-1$
 					if (!quoted)
 						out.append('"');
 					out.append(escaped);
@@ -947,11 +1124,11 @@ public class Config {
 				}
 				out.append(']');
 			} else if (e.section != null && e.name != null) {
-				if (e.prefix == null || "".equals(e.prefix))
+				if (e.prefix == null || "".equals(e.prefix)) //$NON-NLS-1$
 					out.append('\t');
 				out.append(e.name);
 				if (MAGIC_EMPTY_VALUE != e.value) {
-					out.append(" =");
+					out.append(" ="); //$NON-NLS-1$
 					if (e.value != null) {
 						out.append(' ');
 						out.append(escapeValue(e.value));
@@ -977,14 +1154,26 @@ public class Config {
 	 *             made to {@code this}.
 	 */
 	public void fromText(final String text) throws ConfigInvalidException {
-		final List<ConfigLine> newEntries = new ArrayList<ConfigLine>();
+		state.set(newState(fromTextRecurse(text, 1)));
+	}
+
+	private List<ConfigLine> fromTextRecurse(final String text, int depth)
+			throws ConfigInvalidException {
+		if (depth > MAX_DEPTH) {
+			throw new ConfigInvalidException(
+					JGitText.get().tooManyIncludeRecursions);
+		}
+		final List<ConfigLine> newEntries = new ArrayList<>();
 		final StringReader in = new StringReader(text);
 		ConfigLine last = null;
 		ConfigLine e = new ConfigLine();
 		for (;;) {
 			int input = in.read();
-			if (-1 == input)
+			if (-1 == input) {
+				if (e.section != null)
+					newEntries.add(e);
 				break;
+			}
 
 			final char c = (char) input;
 			if ('\n' == c) {
@@ -1005,7 +1194,7 @@ public class Config {
 			} else if (e.section == null && Character.isWhitespace(c)) {
 				// Save the leading whitespace (if any).
 				if (e.prefix == null)
-					e.prefix = "";
+					e.prefix = ""; //$NON-NLS-1$
 				e.prefix += c;
 
 			} else if ('[' == c) {
@@ -1018,7 +1207,7 @@ public class Config {
 				}
 				if (']' != input)
 					throw new ConfigInvalidException(JGitText.get().badGroupHeader);
-				e.suffix = "";
+				e.suffix = ""; //$NON-NLS-1$
 
 			} else if (last != null) {
 				// Read a value.
@@ -1026,17 +1215,50 @@ public class Config {
 				e.subsection = last.subsection;
 				in.reset();
 				e.name = readKeyName(in);
-				if (e.name.endsWith("\n")) {
+				if (e.name.endsWith("\n")) { //$NON-NLS-1$
 					e.name = e.name.substring(0, e.name.length() - 1);
 					e.value = MAGIC_EMPTY_VALUE;
 				} else
 					e.value = readValue(in, false, -1);
 
+				if (e.section.equals("include")) { //$NON-NLS-1$
+					addIncludedConfig(newEntries, e, depth);
+				}
 			} else
 				throw new ConfigInvalidException(JGitText.get().invalidLineInConfigFile);
 		}
 
-		state.set(newState(newEntries));
+		return newEntries;
+	}
+
+	private void addIncludedConfig(final List<ConfigLine> newEntries,
+			ConfigLine line, int depth) throws ConfigInvalidException {
+		if (!line.name.equals("path") || //$NON-NLS-1$
+				line.value == null || line.value.equals(MAGIC_EMPTY_VALUE)) {
+			throw new ConfigInvalidException(
+					JGitText.get().invalidLineInConfigFile);
+		}
+		File path = new File(line.value);
+		try {
+			byte[] bytes = IO.readFully(path);
+			String decoded;
+			if (isUtf8(bytes)) {
+				decoded = RawParseUtils.decode(RawParseUtils.UTF8_CHARSET,
+						bytes, 3, bytes.length);
+			} else {
+				decoded = RawParseUtils.decode(bytes);
+			}
+			newEntries.addAll(fromTextRecurse(decoded, depth + 1));
+		} catch (FileNotFoundException fnfe) {
+			if (path.exists()) {
+				throw new ConfigInvalidException(MessageFormat
+						.format(JGitText.get().cannotReadFile, path), fnfe);
+			}
+		} catch (IOException ioe) {
+			throw new ConfigInvalidException(
+					MessageFormat.format(JGitText.get().cannotReadFile, path),
+					ioe);
+		}
 	}
 
 	private ConfigSnapshot newState() {
@@ -1054,6 +1276,19 @@ public class Config {
 	 */
 	protected void clear() {
 		state.set(newState());
+	}
+
+	/**
+	 * Check if bytes should be treated as UTF-8 or not.
+	 *
+	 * @param bytes
+	 *            the bytes to check encoding for.
+	 * @return true if bytes should be treated as UTF-8, false otherwise.
+	 * @since 4.4
+	 */
+	protected boolean isUtf8(final byte[] bytes) {
+		return bytes.length >= 3 && bytes[0] == (byte) 0xEF
+				&& bytes[1] == (byte) 0xBB && bytes[2] == (byte) 0xBF;
 	}
 
 	private static String readSectionName(final StringReader in)
@@ -1149,8 +1384,6 @@ public class Config {
 		for (;;) {
 			int c = in.read();
 			if (c < 0) {
-				if (value.length() == 0)
-					throw new ConfigInvalidException(JGitText.get().unexpectedEndOfConfigFile);
 				break;
 			}
 
@@ -1266,5 +1499,28 @@ public class Config {
 		void reset() {
 			pos--;
 		}
+	}
+
+	/**
+	 * Converts enumeration values into configuration options and vice-versa,
+	 * allowing to match a config option with an enum value.
+	 *
+	 */
+	public static interface ConfigEnum {
+		/**
+		 * Converts enumeration value into a string to be save in config.
+		 *
+		 * @return the enum value as config string
+		 */
+		String toConfigValue();
+
+		/**
+		 * Checks if the given string matches with enum value.
+		 *
+		 * @param in
+		 *            the string to match
+		 * @return true if the given string matches enum value, false otherwise
+		 */
+		boolean matchConfigValue(String in);
 	}
 }

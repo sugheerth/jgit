@@ -70,7 +70,7 @@ import org.eclipse.jgit.util.IntList;
 public class MergeResult<S extends Sequence> implements Iterable<MergeChunk> {
 	private final List<S> sequences;
 
-	private final IntList chunks = new IntList();
+	final IntList chunks = new IntList();
 
 	private boolean containsConflicts = false;
 
@@ -127,20 +127,23 @@ public class MergeResult<S extends Sequence> implements Iterable<MergeChunk> {
 		return sequences;
 	}
 
-	private static final ConflictState[] states = ConflictState.values();
+	static final ConflictState[] states = ConflictState.values();
 
 	/**
 	 * @return an iterator over the MergeChunks. The iterator does not support
 	 * the remove operation
 	 */
+	@Override
 	public Iterator<MergeChunk> iterator() {
 		return new Iterator<MergeChunk>() {
 			int idx;
 
+			@Override
 			public boolean hasNext() {
 				return (idx < chunks.size());
 			}
 
+			@Override
 			public MergeChunk next() {
 				ConflictState state = states[chunks.get(idx++)];
 				int srcIdx = chunks.get(idx++);
@@ -149,6 +152,7 @@ public class MergeResult<S extends Sequence> implements Iterable<MergeChunk> {
 				return new MergeChunk(srcIdx, begin, end, state);
 			}
 
+			@Override
 			public void remove() {
 				throw new UnsupportedOperationException();
 			}
@@ -160,5 +164,18 @@ public class MergeResult<S extends Sequence> implements Iterable<MergeChunk> {
 	 */
 	public boolean containsConflicts() {
 		return containsConflicts;
+	}
+
+	/**
+	 * Sets explicitly whether this merge should be seen as containing a
+	 * conflict or not. Needed because during RecursiveMerger we want to do
+	 * content-merges and take the resulting content (even with conflict
+	 * markers!) as new conflict-free content
+	 *
+	 * @param containsConflicts
+	 * @since 3.5
+	 */
+	protected void setContainsConflicts(boolean containsConflicts) {
+		this.containsConflicts = containsConflicts;
 	}
 }

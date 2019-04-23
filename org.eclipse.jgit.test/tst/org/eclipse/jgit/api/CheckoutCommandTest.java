@@ -43,8 +43,10 @@
  */
 package org.eclipse.jgit.api;
 
+import static org.eclipse.jgit.lib.Constants.MASTER;
+import static org.eclipse.jgit.lib.Constants.R_HEADS;
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -56,24 +58,38 @@ import static org.junit.Assert.fail;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.net.MalformedURLException;
+import java.net.URISyntaxException;
 
 import org.eclipse.jgit.api.CheckoutResult.Status;
+import org.eclipse.jgit.api.CreateBranchCommand.SetupUpstreamMode;
 import org.eclipse.jgit.api.errors.GitAPIException;
+import org.eclipse.jgit.api.errors.InvalidRefNameException;
+import org.eclipse.jgit.api.errors.InvalidRemoteException;
 import org.eclipse.jgit.api.errors.JGitInternalException;
+import org.eclipse.jgit.api.errors.RefAlreadyExistsException;
 import org.eclipse.jgit.api.errors.RefNotFoundException;
+import org.eclipse.jgit.api.errors.TransportException;
 import org.eclipse.jgit.dircache.DirCache;
 import org.eclipse.jgit.dircache.DirCacheEntry;
+import org.eclipse.jgit.junit.JGitTestUtil;
+import org.eclipse.jgit.junit.RepositoryTestCase;
+import org.eclipse.jgit.lfs.CleanFilter;
+import org.eclipse.jgit.lfs.SmudgeFilter;
+import org.eclipse.jgit.lib.ConfigConstants;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.RefUpdate;
 import org.eclipse.jgit.lib.Repository;
-import org.eclipse.jgit.lib.RepositoryTestCase;
+import org.eclipse.jgit.lib.Sets;
 import org.eclipse.jgit.lib.StoredConfig;
 import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.storage.file.FileBasedConfig;
 import org.eclipse.jgit.transport.RefSpec;
 import org.eclipse.jgit.transport.RemoteConfig;
 import org.eclipse.jgit.transport.URIish;
 import org.eclipse.jgit.util.FileUtils;
+import org.eclipse.jgit.util.SystemReader;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -87,6 +103,8 @@ public class CheckoutCommandTest extends RepositoryTestCase {
 	@Override
 	@Before
 	public void setUp() throws Exception {
+		CleanFilter.register();
+		SmudgeFilter.register();
 		super.setUp();
 		git = new Git(db);
 		// commit something
@@ -125,7 +143,7 @@ public class CheckoutCommandTest extends RepositoryTestCase {
 	@Test
 	public void testCreateBranchOnCheckout() throws Exception {
 		git.checkout().setCreateBranch(true).setName("test2").call();
-		assertNotNull(db.getRef("test2"));
+		assertNotNull(db.exactRef("refs/heads/test2"));
 	}
 
 	@Test
@@ -162,8 +180,9 @@ public class CheckoutCommandTest extends RepositoryTestCase {
 		} catch (IOException e) {
 			// the test makes only sense if deletion of
 			// a file with open stream fails
+		} finally {
+			fis.close();
 		}
-		fis.close();
 		FileUtils.delete(testFile);
 		CheckoutCommand co = git.checkout();
 		// delete Test.txt in branch test
@@ -198,28 +217,58 @@ public class CheckoutCommandTest extends RepositoryTestCase {
 	}
 
 	@Test
+	public void testCheckoutLightweightTag() throws Exception {
+		git.tag().setAnnotated(false).setName("test-tag")
+				.setObjectId(initialCommit).call();
+		Ref result = git.checkout().setName("test-tag").call();
+
+		assertNull(result);
+		assertEquals(initialCommit.getId(), db.resolve(Constants.HEAD));
+		assertHeadDetached();
+	}
+
+	@Test
+	public void testCheckoutAnnotatedTag() throws Exception {
+		git.tag().setAnnotated(true).setName("test-tag")
+				.setObjectId(initialCommit).call();
+		Ref result = git.checkout().setName("test-tag").call();
+
+		assertNull(result);
+		assertEquals(initialCommit.getId(), db.resolve(Constants.HEAD));
+		assertHeadDetached();
+	}
+
+	@Test
+	public void testCheckoutRemoteTrackingWithUpstream() throws Exception {
+		Repository db2 = createRepositoryWithRemote();
+
+		Git.wrap(db2).checkout().setCreateBranch(true).setName("test")
+				.setStartPoint("origin/test")
+				.setUpstreamMode(SetupUpstreamMode.TRACK).call();
+
+		assertEquals("refs/heads/test",
+				db2.exactRef(Constants.HEAD).getTarget().getName());
+		StoredConfig config = db2.getConfig();
+		assertEquals("origin", config.getString(
+				ConfigConstants.CONFIG_BRANCH_SECTION, "test",
+				ConfigConstants.CONFIG_KEY_REMOTE));
+		assertEquals("refs/heads/test", config.getString(
+				ConfigConstants.CONFIG_BRANCH_SECTION, "test",
+				ConfigConstants.CONFIG_KEY_MERGE));
+	}
+
+	@Test
 	public void testCheckoutRemoteTrackingWithoutLocalBranch() throws Exception {
-		// create second repository
-		Repository db2 = createWorkRepository();
-		Git git2 = new Git(db2);
+		Repository db2 = createRepositoryWithRemote();
 
-		// setup the second repository to fetch from the first repository
-		final StoredConfig config = db2.getConfig();
-		RemoteConfig remoteConfig = new RemoteConfig(config, "origin");
-		URIish uri = new URIish(db.getDirectory().toURI().toURL());
-		remoteConfig.addURI(uri);
-		remoteConfig.update(config);
-		config.save();
-
-		// fetch from first repository
-		RefSpec spec = new RefSpec("+refs/heads/*:refs/remotes/origin/*");
-		git2.fetch().setRemote("origin").setRefSpecs(spec).call();
 		// checkout remote tracking branch in second repository
 		// (no local branches exist yet in second repository)
-		git2.checkout().setName("remotes/origin/test").call();
+		Git.wrap(db2).checkout().setName("remotes/origin/test").call();
 		assertEquals("[Test.txt, mode:100644, content:Some change]",
 				indexState(db2, CONTENT));
 	}
+
+
 
 	@Test
 	public void testCheckoutOfFileWithInexistentParentDir() throws Exception {
@@ -305,13 +354,11 @@ public class CheckoutCommandTest extends RepositoryTestCase {
 		CheckoutCommand co = git.checkout();
 		co.setName("master").call();
 
-		String commitId = db.getRef(Constants.MASTER).getObjectId().name();
+		String commitId = db.exactRef(R_HEADS + MASTER).getObjectId().name();
 		co = git.checkout();
 		co.setName(commitId).call();
 
-		Ref head = db.getRef(Constants.HEAD);
-		assertFalse(head.isSymbolic());
-		assertSame(head, head.getTarget());
+		assertHeadDetached();
 	}
 
 	@Test
@@ -349,5 +396,437 @@ public class CheckoutCommandTest extends RepositoryTestCase {
 		assertNotNull(entry);
 		assertEquals(size, entry.getLength());
 		assertEquals(mTime, entry.getLastModified());
+	}
+
+	@Test
+	public void testCheckoutOrphanBranch() throws Exception {
+		CheckoutCommand co = newOrphanBranchCommand();
+		assertCheckoutRef(co.call());
+
+		File HEAD = new File(trash, ".git/HEAD");
+		String headRef = read(HEAD);
+		assertEquals("ref: refs/heads/orphanbranch\n", headRef);
+		assertEquals(2, trash.list().length);
+
+		File heads = new File(trash, ".git/refs/heads");
+		assertEquals(2, heads.listFiles().length);
+
+		this.assertNoHead();
+		this.assertRepositoryCondition(1);
+		assertEquals(CheckoutResult.NOT_TRIED_RESULT, co.getResult());
+	}
+
+	private Repository createRepositoryWithRemote() throws IOException,
+			URISyntaxException, MalformedURLException, GitAPIException,
+			InvalidRemoteException, TransportException {
+		// create second repository
+		Repository db2 = createWorkRepository();
+		try (Git git2 = new Git(db2)) {
+			// setup the second repository to fetch from the first repository
+			final StoredConfig config = db2.getConfig();
+			RemoteConfig remoteConfig = new RemoteConfig(config, "origin");
+			URIish uri = new URIish(db.getDirectory().toURI().toURL());
+			remoteConfig.addURI(uri);
+			remoteConfig.update(config);
+			config.save();
+
+			// fetch from first repository
+			RefSpec spec = new RefSpec("+refs/heads/*:refs/remotes/origin/*");
+			git2.fetch().setRemote("origin").setRefSpecs(spec).call();
+			return db2;
+		}
+	}
+
+	private CheckoutCommand newOrphanBranchCommand() {
+		return git.checkout().setOrphan(true)
+				.setName("orphanbranch");
+	}
+
+	private static void assertCheckoutRef(Ref ref) {
+		assertNotNull(ref);
+		assertEquals("refs/heads/orphanbranch", ref.getTarget().getName());
+	}
+
+	private void assertNoHead() throws IOException {
+		assertNull(db.resolve("HEAD"));
+	}
+
+	private void assertHeadDetached() throws IOException {
+		Ref head = db.exactRef(Constants.HEAD);
+		assertFalse(head.isSymbolic());
+		assertSame(head, head.getTarget());
+	}
+
+	private void assertRepositoryCondition(int files) throws GitAPIException {
+		org.eclipse.jgit.api.Status status = this.git.status().call();
+		assertFalse(status.isClean());
+		assertEquals(files, status.getAdded().size());
+	}
+
+	@Test
+	public void testCreateOrphanBranchWithStartCommit() throws Exception {
+		CheckoutCommand co = newOrphanBranchCommand();
+		Ref ref = co.setStartPoint(initialCommit).call();
+		assertCheckoutRef(ref);
+		assertEquals(2, trash.list().length);
+		this.assertNoHead();
+		this.assertRepositoryCondition(1);
+	}
+
+	@Test
+	public void testCreateOrphanBranchWithStartPoint() throws Exception {
+		CheckoutCommand co = newOrphanBranchCommand();
+		Ref ref = co.setStartPoint("HEAD^").call();
+		assertCheckoutRef(ref);
+
+		assertEquals(2, trash.list().length);
+		this.assertNoHead();
+		this.assertRepositoryCondition(1);
+	}
+
+	@Test
+	public void testInvalidRefName() throws Exception {
+		try {
+			git.checkout().setOrphan(true).setName("../invalidname").call();
+			fail("Should have failed");
+		} catch (InvalidRefNameException e) {
+			// except to hit here
+		}
+	}
+
+	@Test
+	public void testNullRefName() throws Exception {
+		try {
+			git.checkout().setOrphan(true).setName(null).call();
+			fail("Should have failed");
+		} catch (InvalidRefNameException e) {
+			// except to hit here
+		}
+	}
+
+	@Test
+	public void testAlreadyExists() throws Exception {
+		this.git.checkout().setCreateBranch(true).setName("orphanbranch")
+				.call();
+		this.git.checkout().setName("master").call();
+
+		try {
+			newOrphanBranchCommand().call();
+			fail("Should have failed");
+		} catch (RefAlreadyExistsException e) {
+			// except to hit here
+		}
+	}
+
+	// TODO: write a faster test which depends less on characteristics of
+	// underlying filesystem/OS.
+	@Test
+	public void testCheckoutAutoCrlfTrue() throws Exception {
+		int nrOfAutoCrlfTestFiles = 200;
+
+		FileBasedConfig c = db.getConfig();
+		c.setString("core", null, "autocrlf", "true");
+		c.save();
+
+		AddCommand add = git.add();
+		for (int i = 100; i < 100 + nrOfAutoCrlfTestFiles; i++) {
+			writeTrashFile("Test_" + i + ".txt", "Hello " + i
+					+ " world\nX\nYU\nJK\n");
+			add.addFilepattern("Test_" + i + ".txt");
+		}
+		fsTick(null);
+		add.call();
+		RevCommit c1 = git.commit().setMessage("add some lines").call();
+
+		add = git.add();
+		for (int i = 100; i < 100 + nrOfAutoCrlfTestFiles; i++) {
+			writeTrashFile("Test_" + i + ".txt", "Hello " + i
+					+ " world\nX\nY\n");
+			add.addFilepattern("Test_" + i + ".txt");
+		}
+		fsTick(null);
+		add.call();
+		git.commit().setMessage("add more").call();
+
+		git.checkout().setName(c1.getName()).call();
+
+		boolean foundUnsmudged = false;
+		DirCache dc = db.readDirCache();
+		for (int i = 100; i < 100 + nrOfAutoCrlfTestFiles; i++) {
+			DirCacheEntry entry = dc.getEntry(
+					"Test_" + i + ".txt");
+			if (!entry.isSmudged()) {
+				foundUnsmudged = true;
+				assertEquals("unexpected file length in git index", 28,
+						entry.getLength());
+			}
+		}
+		org.junit.Assume.assumeTrue(foundUnsmudged);
+	}
+
+	@Test
+	public void testSmudgeFilter_modifyExisting() throws IOException, GitAPIException {
+		File script = writeTempFile("sed s/o/e/g");
+		StoredConfig config = git.getRepository().getConfig();
+		config.setString("filter", "lfs", "smudge",
+				"sh " + slashify(script.getPath()));
+		config.save();
+
+		writeTrashFile(".gitattributes", "*.txt filter=lfs");
+		git.add().addFilepattern(".gitattributes").call();
+		git.commit().setMessage("add filter").call();
+
+		writeTrashFile("src/a.tmp", "x");
+		// Caution: we need a trailing '\n' since sed on mac always appends
+		// linefeeds if missing
+		writeTrashFile("src/a.txt", "x\n");
+		git.add().addFilepattern("src/a.tmp").addFilepattern("src/a.txt")
+				.call();
+		RevCommit content1 = git.commit().setMessage("add content").call();
+
+		writeTrashFile("src/a.tmp", "foo");
+		writeTrashFile("src/a.txt", "foo\n");
+		git.add().addFilepattern("src/a.tmp").addFilepattern("src/a.txt")
+				.call();
+		RevCommit content2 = git.commit().setMessage("changed content").call();
+
+		git.checkout().setName(content1.getName()).call();
+		git.checkout().setName(content2.getName()).call();
+
+		assertEquals(
+				"[.gitattributes, mode:100644, content:*.txt filter=lfs][Test.txt, mode:100644, content:Some change][src/a.tmp, mode:100644, content:foo][src/a.txt, mode:100644, content:foo\n]",
+				indexState(CONTENT));
+		assertEquals(Sets.of("src/a.txt"), git.status().call().getModified());
+		assertEquals("foo", read("src/a.tmp"));
+		assertEquals("fee\n", read("src/a.txt"));
+	}
+
+	@Test
+	public void testSmudgeFilter_createNew()
+			throws IOException, GitAPIException {
+		File script = writeTempFile("sed s/o/e/g");
+		StoredConfig config = git.getRepository().getConfig();
+		config.setString("filter", "lfs", "smudge",
+				"sh " + slashify(script.getPath()));
+		config.save();
+
+		writeTrashFile("foo", "foo");
+		git.add().addFilepattern("foo").call();
+		RevCommit initial = git.commit().setMessage("initial").call();
+
+		writeTrashFile(".gitattributes", "*.txt filter=lfs");
+		git.add().addFilepattern(".gitattributes").call();
+		git.commit().setMessage("add filter").call();
+
+		writeTrashFile("src/a.tmp", "foo");
+		// Caution: we need a trailing '\n' since sed on mac always appends
+		// linefeeds if missing
+		writeTrashFile("src/a.txt", "foo\n");
+		git.add().addFilepattern("src/a.tmp").addFilepattern("src/a.txt")
+				.call();
+		RevCommit content = git.commit().setMessage("added content").call();
+
+		git.checkout().setName(initial.getName()).call();
+		git.checkout().setName(content.getName()).call();
+
+		assertEquals(
+				"[.gitattributes, mode:100644, content:*.txt filter=lfs][Test.txt, mode:100644, content:Some change][foo, mode:100644, content:foo][src/a.tmp, mode:100644, content:foo][src/a.txt, mode:100644, content:foo\n]",
+				indexState(CONTENT));
+		assertEquals("foo", read("src/a.tmp"));
+		assertEquals("fee\n", read("src/a.txt"));
+	}
+
+	@Test
+	public void testSmudgeFilter_deleteFileAndRestoreFromCommit()
+			throws IOException, GitAPIException {
+		File script = writeTempFile("sed s/o/e/g");
+		StoredConfig config = git.getRepository().getConfig();
+		config.setString("filter", "lfs", "smudge",
+				"sh " + slashify(script.getPath()));
+		config.save();
+
+		writeTrashFile("foo", "foo");
+		git.add().addFilepattern("foo").call();
+		git.commit().setMessage("initial").call();
+
+		writeTrashFile(".gitattributes", "*.txt filter=lfs");
+		git.add().addFilepattern(".gitattributes").call();
+		git.commit().setMessage("add filter").call();
+
+		writeTrashFile("src/a.tmp", "foo");
+		// Caution: we need a trailing '\n' since sed on mac always appends
+		// linefeeds if missing
+		writeTrashFile("src/a.txt", "foo\n");
+		git.add().addFilepattern("src/a.tmp").addFilepattern("src/a.txt")
+				.call();
+		RevCommit content = git.commit().setMessage("added content").call();
+
+		deleteTrashFile("src/a.txt");
+		git.checkout().setStartPoint(content.getName()).addPath("src/a.txt")
+				.call();
+
+		assertEquals(
+				"[.gitattributes, mode:100644, content:*.txt filter=lfs][Test.txt, mode:100644, content:Some change][foo, mode:100644, content:foo][src/a.tmp, mode:100644, content:foo][src/a.txt, mode:100644, content:foo\n]",
+				indexState(CONTENT));
+		assertEquals("foo", read("src/a.tmp"));
+		assertEquals("fee\n", read("src/a.txt"));
+	}
+
+	@Test
+	public void testSmudgeFilter_deleteFileAndRestoreFromIndex()
+			throws IOException, GitAPIException {
+		File script = writeTempFile("sed s/o/e/g");
+		StoredConfig config = git.getRepository().getConfig();
+		config.setString("filter", "lfs", "smudge",
+				"sh " + slashify(script.getPath()));
+		config.save();
+
+		writeTrashFile("foo", "foo");
+		git.add().addFilepattern("foo").call();
+		git.commit().setMessage("initial").call();
+
+		writeTrashFile(".gitattributes", "*.txt filter=lfs");
+		git.add().addFilepattern(".gitattributes").call();
+		git.commit().setMessage("add filter").call();
+
+		writeTrashFile("src/a.tmp", "foo");
+		// Caution: we need a trailing '\n' since sed on mac always appends
+		// linefeeds if missing
+		writeTrashFile("src/a.txt", "foo\n");
+		git.add().addFilepattern("src/a.tmp").addFilepattern("src/a.txt")
+				.call();
+		git.commit().setMessage("added content").call();
+
+		deleteTrashFile("src/a.txt");
+		git.checkout().addPath("src/a.txt").call();
+
+		assertEquals(
+				"[.gitattributes, mode:100644, content:*.txt filter=lfs][Test.txt, mode:100644, content:Some change][foo, mode:100644, content:foo][src/a.tmp, mode:100644, content:foo][src/a.txt, mode:100644, content:foo\n]",
+				indexState(CONTENT));
+		assertEquals("foo", read("src/a.tmp"));
+		assertEquals("fee\n", read("src/a.txt"));
+	}
+
+	@Test
+	public void testSmudgeFilter_deleteFileAndCreateBranchAndRestoreFromCommit()
+			throws IOException, GitAPIException {
+		File script = writeTempFile("sed s/o/e/g");
+		StoredConfig config = git.getRepository().getConfig();
+		config.setString("filter", "lfs", "smudge",
+				"sh " + slashify(script.getPath()));
+		config.save();
+
+		writeTrashFile("foo", "foo");
+		git.add().addFilepattern("foo").call();
+		git.commit().setMessage("initial").call();
+
+		writeTrashFile(".gitattributes", "*.txt filter=lfs");
+		git.add().addFilepattern(".gitattributes").call();
+		git.commit().setMessage("add filter").call();
+
+		writeTrashFile("src/a.tmp", "foo");
+		// Caution: we need a trailing '\n' since sed on mac always appends
+		// linefeeds if missing
+		writeTrashFile("src/a.txt", "foo\n");
+		git.add().addFilepattern("src/a.tmp").addFilepattern("src/a.txt")
+				.call();
+		RevCommit content = git.commit().setMessage("added content").call();
+
+		deleteTrashFile("src/a.txt");
+		git.checkout().setName("newBranch").setCreateBranch(true)
+				.setStartPoint(content).addPath("src/a.txt").call();
+
+		assertEquals(
+				"[.gitattributes, mode:100644, content:*.txt filter=lfs][Test.txt, mode:100644, content:Some change][foo, mode:100644, content:foo][src/a.tmp, mode:100644, content:foo][src/a.txt, mode:100644, content:foo\n]",
+				indexState(CONTENT));
+		assertEquals("foo", read("src/a.tmp"));
+		assertEquals("fee\n", read("src/a.txt"));
+	}
+
+	@Test
+	public void testSmudgeAndClean() throws Exception {
+		File clean_filter = writeTempFile("sed s/V1/@version/g");
+		File smudge_filter = writeTempFile("sed s/@version/V1/g");
+
+		try (Git git2 = new Git(db)) {
+			StoredConfig config = git.getRepository().getConfig();
+			config.setString("filter", "lfs", "smudge",
+					"sh " + slashify(smudge_filter.getPath()));
+			config.setString("filter", "lfs", "clean",
+					"sh " + slashify(clean_filter.getPath()));
+			config.setBoolean("filter", "lfs", "useJGitBuiltin", true);
+			config.save();
+			writeTrashFile(".gitattributes", "filterTest.txt filter=lfs");
+			git2.add().addFilepattern(".gitattributes").call();
+			git2.commit().setMessage("add attributes").call();
+
+			fsTick(writeTrashFile("filterTest.txt", "hello world, V1\n"));
+			git2.add().addFilepattern("filterTest.txt").call();
+			RevCommit one = git2.commit().setMessage("add filterText.txt").call();
+			assertEquals(
+					"[.gitattributes, mode:100644, content:filterTest.txt filter=lfs][Test.txt, mode:100644, content:Some change][filterTest.txt, mode:100644, content:version https://git-lfs.github.com/spec/v1\noid sha256:7bd5d32e5c494354aa4c2473a1306d0ce7b52cc3bffeb342c03cd517ef8cf8da\nsize 16\n]",
+					indexState(CONTENT));
+
+			fsTick(writeTrashFile("filterTest.txt", "bon giorno world, V1\n"));
+			git2.add().addFilepattern("filterTest.txt").call();
+			RevCommit two = git2.commit().setMessage("modified filterTest.txt").call();
+
+			assertTrue(git2.status().call().isClean());
+			assertEquals(
+					"[.gitattributes, mode:100644, content:filterTest.txt filter=lfs][Test.txt, mode:100644, content:Some change][filterTest.txt, mode:100644, content:version https://git-lfs.github.com/spec/v1\noid sha256:087148cccf53b0049c56475c1595113c9da4b638997c3489af8ac7108d51ef13\nsize 21\n]",
+					indexState(CONTENT));
+
+			git2.checkout().setName(one.getName()).call();
+			assertTrue(git2.status().call().isClean());
+			assertEquals(
+					"[.gitattributes, mode:100644, content:filterTest.txt filter=lfs][Test.txt, mode:100644, content:Some change][filterTest.txt, mode:100644, content:version https://git-lfs.github.com/spec/v1\noid sha256:7bd5d32e5c494354aa4c2473a1306d0ce7b52cc3bffeb342c03cd517ef8cf8da\nsize 16\n]",
+					indexState(CONTENT));
+			assertEquals("hello world, V1\n", read("filterTest.txt"));
+
+			git2.checkout().setName(two.getName()).call();
+			assertTrue(git2.status().call().isClean());
+			assertEquals(
+					"[.gitattributes, mode:100644, content:filterTest.txt filter=lfs][Test.txt, mode:100644, content:Some change][filterTest.txt, mode:100644, content:version https://git-lfs.github.com/spec/v1\noid sha256:087148cccf53b0049c56475c1595113c9da4b638997c3489af8ac7108d51ef13\nsize 21\n]",
+					indexState(CONTENT));
+			assertEquals("bon giorno world, V1\n", read("filterTest.txt"));
+		}
+	}
+
+	@Test
+	public void testNonDeletableFilesOnWindows()
+			throws GitAPIException, IOException {
+		// Only on windows a FileInputStream blocks us from deleting a file
+		org.junit.Assume.assumeTrue(SystemReader.getInstance().isWindows());
+		writeTrashFile("toBeModified.txt", "a");
+		writeTrashFile("toBeDeleted.txt", "a");
+		git.add().addFilepattern(".").call();
+		RevCommit addFiles = git.commit().setMessage("add more files").call();
+
+		git.rm().setCached(false).addFilepattern("Test.txt")
+				.addFilepattern("toBeDeleted.txt").call();
+		writeTrashFile("toBeModified.txt", "b");
+		writeTrashFile("toBeCreated.txt", "a");
+		git.add().addFilepattern(".").call();
+		RevCommit crudCommit = git.commit().setMessage("delete, modify, add")
+				.call();
+		git.checkout().setName(addFiles.getName()).call();
+		try ( FileInputStream fis=new FileInputStream(new File(db.getWorkTree(), "Test.txt")) ) {
+			CheckoutCommand coCommand = git.checkout();
+			coCommand.setName(crudCommit.getName()).call();
+			CheckoutResult result = coCommand.getResult();
+			assertEquals(Status.NONDELETED, result.getStatus());
+			assertEquals("[Test.txt, toBeDeleted.txt]",
+					result.getRemovedList().toString());
+			assertEquals("[toBeCreated.txt, toBeModified.txt]",
+					result.getModifiedList().toString());
+			assertEquals("[Test.txt]", result.getUndeletedList().toString());
+			assertTrue(result.getConflictList().isEmpty());
+		}
+	}
+
+	private File writeTempFile(String body) throws IOException {
+		File f = File.createTempFile("AddCommandTest_", "");
+		JGitTestUtil.write(f, body);
+		return f;
 	}
 }

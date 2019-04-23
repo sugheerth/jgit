@@ -44,12 +44,17 @@ package org.eclipse.jgit.api;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.PrintStream;
 import java.text.MessageFormat;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 
+import org.eclipse.jgit.api.errors.AbortedByHookException;
 import org.eclipse.jgit.api.errors.ConcurrentRefUpdateException;
+import org.eclipse.jgit.api.errors.EmtpyCommitException;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.api.errors.JGitInternalException;
 import org.eclipse.jgit.api.errors.NoFilepatternException;
@@ -58,13 +63,15 @@ import org.eclipse.jgit.api.errors.NoMessageException;
 import org.eclipse.jgit.api.errors.UnmergedPathsException;
 import org.eclipse.jgit.api.errors.WrongRepositoryStateException;
 import org.eclipse.jgit.dircache.DirCache;
+import org.eclipse.jgit.dircache.DirCacheBuildIterator;
 import org.eclipse.jgit.dircache.DirCacheBuilder;
-import org.eclipse.jgit.dircache.DirCacheEditor;
-import org.eclipse.jgit.dircache.DirCacheEditor.DeletePath;
-import org.eclipse.jgit.dircache.DirCacheEditor.PathEdit;
 import org.eclipse.jgit.dircache.DirCacheEntry;
 import org.eclipse.jgit.dircache.DirCacheIterator;
 import org.eclipse.jgit.errors.UnmergedPathException;
+import org.eclipse.jgit.hooks.CommitMsgHook;
+import org.eclipse.jgit.hooks.Hooks;
+import org.eclipse.jgit.hooks.PostCommitHook;
+import org.eclipse.jgit.hooks.PreCommitHook;
 import org.eclipse.jgit.internal.JGitText;
 import org.eclipse.jgit.lib.CommitBuilder;
 import org.eclipse.jgit.lib.Constants;
@@ -78,10 +85,13 @@ import org.eclipse.jgit.lib.RefUpdate.Result;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.lib.RepositoryState;
 import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.revwalk.RevObject;
+import org.eclipse.jgit.revwalk.RevTag;
 import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.treewalk.CanonicalTreeParser;
 import org.eclipse.jgit.treewalk.FileTreeIterator;
 import org.eclipse.jgit.treewalk.TreeWalk;
+import org.eclipse.jgit.treewalk.TreeWalk.OperationType;
 import org.eclipse.jgit.util.ChangeIdUtil;
 
 /**
@@ -102,7 +112,7 @@ public class CommitCommand extends GitCommand<RevCommit> {
 
 	private boolean all;
 
-	private List<String> only = new ArrayList<String>();
+	private List<String> only = new ArrayList<>();
 
 	private boolean[] onlyProcessed;
 
@@ -114,9 +124,20 @@ public class CommitCommand extends GitCommand<RevCommit> {
 	 * parents this commit should have. The current HEAD will be in this list
 	 * and also all commits mentioned in .git/MERGE_HEAD
 	 */
-	private List<ObjectId> parents = new LinkedList<ObjectId>();
+	private List<ObjectId> parents = new LinkedList<>();
 
 	private String reflogComment;
+
+	private boolean useDefaultReflogMessage = true;
+
+	/**
+	 * Setting this option bypasses the pre-commit and commit-msg hooks.
+	 */
+	private boolean noVerify;
+
+	private HashMap<String, PrintStream> hookOutRedirect = new HashMap<>(3);
+
+	private Boolean allowEmpty;
 
 	/**
 	 * @param repo
@@ -143,25 +164,36 @@ public class CommitCommand extends GitCommand<RevCommit> {
 	 *             else
 	 * @throws WrongRepositoryStateException
 	 *             when repository is not in the right state for committing
+	 * @throws AbortedByHookException
+	 *             if there are either pre-commit or commit-msg hooks present in
+	 *             the repository and one of them rejects the commit.
 	 */
+	@Override
 	public RevCommit call() throws GitAPIException, NoHeadException,
 			NoMessageException, UnmergedPathsException,
-			ConcurrentRefUpdateException,
-			WrongRepositoryStateException {
+			ConcurrentRefUpdateException, WrongRepositoryStateException,
+			AbortedByHookException {
 		checkCallable();
+		Collections.sort(only);
 
-		RepositoryState state = repo.getRepositoryState();
-		if (!state.canCommit())
-			throw new WrongRepositoryStateException(MessageFormat.format(
-					JGitText.get().cannotCommitOnARepoWithState, state.name()));
-		processOptions(state);
+		try (RevWalk rw = new RevWalk(repo)) {
+			RepositoryState state = repo.getRepositoryState();
+			if (!state.canCommit())
+				throw new WrongRepositoryStateException(MessageFormat.format(
+						JGitText.get().cannotCommitOnARepoWithState,
+						state.name()));
 
-		try {
-			if (all && !repo.isBare() && repo.getWorkTree() != null) {
-				Git git = new Git(repo);
-				try {
+			if (!noVerify) {
+				Hooks.preCommit(repo, hookOutRedirect.get(PreCommitHook.NAME))
+						.call();
+			}
+
+			processOptions(state, rw);
+
+			if (all && !repo.isBare()) {
+				try (Git git = new Git(repo)) {
 					git.add()
-							.addFilepattern(".")
+							.addFilepattern(".") //$NON-NLS-1$
 							.setUpdate(true).call();
 				} catch (NoFilepatternException e) {
 					// should really not happen
@@ -169,100 +201,118 @@ public class CommitCommand extends GitCommand<RevCommit> {
 				}
 			}
 
-			Ref head = repo.getRef(Constants.HEAD);
+			Ref head = repo.exactRef(Constants.HEAD);
 			if (head == null)
 				throw new NoHeadException(
 						JGitText.get().commitOnRepoWithoutHEADCurrentlyNotSupported);
 
 			// determine the current HEAD and the commit it is referring to
-			ObjectId headId = repo.resolve(Constants.HEAD + "^{commit}");
+			ObjectId headId = repo.resolve(Constants.HEAD + "^{commit}"); //$NON-NLS-1$
+			if (headId == null && amend)
+				throw new WrongRepositoryStateException(
+						JGitText.get().commitAmendOnInitialNotPossible);
+
 			if (headId != null)
 				if (amend) {
-					RevCommit previousCommit = new RevWalk(repo)
-							.parseCommit(headId);
-					RevCommit[] p = previousCommit.getParents();
-					for (int i = 0; i < p.length; i++)
-						parents.add(0, p[i].getId());
+					RevCommit previousCommit = rw.parseCommit(headId);
+					for (RevCommit p : previousCommit.getParents())
+						parents.add(p.getId());
+					if (author == null)
+						author = previousCommit.getAuthorIdent();
 				} else {
 					parents.add(0, headId);
 				}
 
+			if (!noVerify) {
+				message = Hooks
+						.commitMsg(repo,
+								hookOutRedirect.get(CommitMsgHook.NAME))
+						.setCommitMessage(message).call();
+			}
+
 			// lock the index
 			DirCache index = repo.lockDirCache();
-			try {
+			try (ObjectInserter odi = repo.newObjectInserter()) {
 				if (!only.isEmpty())
-					index = createTemporaryIndex(headId, index);
+					index = createTemporaryIndex(headId, index, rw);
 
-				ObjectInserter odi = repo.newObjectInserter();
-				try {
-					// Write the index as tree to the object database. This may
-					// fail for example when the index contains unmerged paths
-					// (unresolved conflicts)
-					ObjectId indexTreeId = index.writeTree(odi);
+				// Write the index as tree to the object database. This may
+				// fail for example when the index contains unmerged paths
+				// (unresolved conflicts)
+				ObjectId indexTreeId = index.writeTree(odi);
 
-					if (insertChangeId)
-						insertChangeId(indexTreeId);
+				if (insertChangeId)
+					insertChangeId(indexTreeId);
 
-					// Create a Commit object, populate it and write it
-					CommitBuilder commit = new CommitBuilder();
-					commit.setCommitter(committer);
-					commit.setAuthor(author);
-					commit.setMessage(message);
-
-					commit.setParentIds(parents);
-					commit.setTreeId(indexTreeId);
-					ObjectId commitId = odi.insert(commit);
-					odi.flush();
-
-					RevWalk revWalk = new RevWalk(repo);
-					try {
-						RevCommit revCommit = revWalk.parseCommit(commitId);
-						RefUpdate ru = repo.updateRef(Constants.HEAD);
-						ru.setNewObjectId(commitId);
-						if (reflogComment != null) {
-							ru.setRefLogMessage(reflogComment, false);
-						} else {
-							String prefix = amend ? "commit (amend): "
-									: "commit: ";
-							ru.setRefLogMessage(
-									prefix + revCommit.getShortMessage(), false);
-						}
-						if (headId != null)
-							ru.setExpectedOldObjectId(headId);
-						else
-							ru.setExpectedOldObjectId(ObjectId.zeroId());
-						Result rc = ru.forceUpdate();
-						switch (rc) {
-						case NEW:
-						case FORCED:
-						case FAST_FORWARD: {
-							setCallable(false);
-							if (state == RepositoryState.MERGING_RESOLVED) {
-								// Commit was successful. Now delete the files
-								// used for merge commits
-								repo.writeMergeCommitMsg(null);
-								repo.writeMergeHeads(null);
-							} else if (state == RepositoryState.CHERRY_PICKING_RESOLVED) {
-								repo.writeMergeCommitMsg(null);
-								repo.writeCherryPickHead(null);
-							}
-							return revCommit;
-						}
-						case REJECTED:
-						case LOCK_FAILURE:
-							throw new ConcurrentRefUpdateException(JGitText
-									.get().couldNotLockHEAD, ru.getRef(), rc);
-						default:
-							throw new JGitInternalException(MessageFormat
-									.format(JGitText.get().updatingRefFailed,
-											Constants.HEAD,
-											commitId.toString(), rc));
-						}
-					} finally {
-						revWalk.release();
+				// Check for empty commits
+				if (headId != null && !allowEmpty.booleanValue()) {
+					RevCommit headCommit = rw.parseCommit(headId);
+					headCommit.getTree();
+					if (indexTreeId.equals(headCommit.getTree())) {
+						throw new EmtpyCommitException(
+								JGitText.get().emptyCommit);
 					}
-				} finally {
-					odi.release();
+				}
+
+				// Create a Commit object, populate it and write it
+				CommitBuilder commit = new CommitBuilder();
+				commit.setCommitter(committer);
+				commit.setAuthor(author);
+				commit.setMessage(message);
+
+				commit.setParentIds(parents);
+				commit.setTreeId(indexTreeId);
+				ObjectId commitId = odi.insert(commit);
+				odi.flush();
+
+				RevCommit revCommit = rw.parseCommit(commitId);
+				RefUpdate ru = repo.updateRef(Constants.HEAD);
+				ru.setNewObjectId(commitId);
+				if (!useDefaultReflogMessage) {
+					ru.setRefLogMessage(reflogComment, false);
+				} else {
+					String prefix = amend ? "commit (amend): " //$NON-NLS-1$
+							: parents.size() == 0 ? "commit (initial): " //$NON-NLS-1$
+									: "commit: "; //$NON-NLS-1$
+					ru.setRefLogMessage(prefix + revCommit.getShortMessage(),
+							false);
+				}
+				if (headId != null)
+					ru.setExpectedOldObjectId(headId);
+				else
+					ru.setExpectedOldObjectId(ObjectId.zeroId());
+				Result rc = ru.forceUpdate();
+				switch (rc) {
+				case NEW:
+				case FORCED:
+				case FAST_FORWARD: {
+					setCallable(false);
+					if (state == RepositoryState.MERGING_RESOLVED
+							|| isMergeDuringRebase(state)) {
+						// Commit was successful. Now delete the files
+						// used for merge commits
+						repo.writeMergeCommitMsg(null);
+						repo.writeMergeHeads(null);
+					} else if (state == RepositoryState.CHERRY_PICKING_RESOLVED) {
+						repo.writeMergeCommitMsg(null);
+						repo.writeCherryPickHead(null);
+					} else if (state == RepositoryState.REVERTING_RESOLVED) {
+						repo.writeMergeCommitMsg(null);
+						repo.writeRevertHead(null);
+					}
+					Hooks.postCommit(repo,
+							hookOutRedirect.get(PostCommitHook.NAME)).call();
+
+					return revCommit;
+				}
+				case REJECTED:
+				case LOCK_FAILURE:
+					throw new ConcurrentRefUpdateException(
+							JGitText.get().couldNotLockHEAD, ru.getRef(), rc);
+				default:
+					throw new JGitInternalException(MessageFormat.format(
+							JGitText.get().updatingRefFailed, Constants.HEAD,
+							commitId.toString(), rc));
 				}
 			} finally {
 				index.unlock();
@@ -275,7 +325,7 @@ public class CommitCommand extends GitCommand<RevCommit> {
 		}
 	}
 
-	private void insertChangeId(ObjectId treeId) throws IOException {
+	private void insertChangeId(ObjectId treeId) {
 		ObjectId firstParentId = null;
 		if (!parents.isEmpty())
 			firstParentId = parents.get(0);
@@ -283,126 +333,143 @@ public class CommitCommand extends GitCommand<RevCommit> {
 				author, committer, message);
 		message = ChangeIdUtil.insertId(message, changeId);
 		if (changeId != null)
-			message = message.replaceAll("\nChange-Id: I"
-					+ ObjectId.zeroId().getName() + "\n", "\nChange-Id: I"
-					+ changeId.getName() + "\n");
+			message = message.replaceAll("\nChange-Id: I" //$NON-NLS-1$
+					+ ObjectId.zeroId().getName() + "\n", "\nChange-Id: I" //$NON-NLS-1$ //$NON-NLS-2$
+					+ changeId.getName() + "\n"); //$NON-NLS-1$
 	}
 
-	private DirCache createTemporaryIndex(ObjectId headId, DirCache index)
+	private DirCache createTemporaryIndex(ObjectId headId, DirCache index,
+			RevWalk rw)
 			throws IOException {
 		ObjectInserter inserter = null;
 
-		// get DirCacheEditor to modify the index if required
-		DirCacheEditor dcEditor = index.editor();
+		// get DirCacheBuilder for existing index
+		DirCacheBuilder existingBuilder = index.builder();
 
 		// get DirCacheBuilder for newly created in-core index to build a
 		// temporary index for this commit
 		DirCache inCoreIndex = DirCache.newInCore();
-		DirCacheBuilder dcBuilder = inCoreIndex.builder();
+		DirCacheBuilder tempBuilder = inCoreIndex.builder();
 
 		onlyProcessed = new boolean[only.size()];
 		boolean emptyCommit = true;
 
-		TreeWalk treeWalk = new TreeWalk(repo);
-		int dcIdx = treeWalk.addTree(new DirCacheIterator(index));
-		int fIdx = treeWalk.addTree(new FileTreeIterator(repo));
-		int hIdx = -1;
-		if (headId != null)
-			hIdx = treeWalk.addTree(new RevWalk(repo).parseTree(headId));
-		treeWalk.setRecursive(true);
+		try (TreeWalk treeWalk = new TreeWalk(repo)) {
+			treeWalk.setOperationType(OperationType.CHECKIN_OP);
+			int dcIdx = treeWalk
+					.addTree(new DirCacheBuildIterator(existingBuilder));
+			FileTreeIterator fti = new FileTreeIterator(repo);
+			fti.setDirCacheIterator(treeWalk, 0);
+			int fIdx = treeWalk.addTree(fti);
+			int hIdx = -1;
+			if (headId != null)
+				hIdx = treeWalk.addTree(rw.parseTree(headId));
+			treeWalk.setRecursive(true);
 
-		while (treeWalk.next()) {
-			String path = treeWalk.getPathString();
-			// check if current entry's path matches a specified path
-			int pos = lookupOnly(path);
+			String lastAddedFile = null;
+			while (treeWalk.next()) {
+				String path = treeWalk.getPathString();
+				// check if current entry's path matches a specified path
+				int pos = lookupOnly(path);
 
-			CanonicalTreeParser hTree = null;
-			if (hIdx != -1)
-				hTree = treeWalk.getTree(hIdx, CanonicalTreeParser.class);
-
-			if (pos >= 0) {
-				// include entry in commit
+				CanonicalTreeParser hTree = null;
+				if (hIdx != -1)
+					hTree = treeWalk.getTree(hIdx, CanonicalTreeParser.class);
 
 				DirCacheIterator dcTree = treeWalk.getTree(dcIdx,
 						DirCacheIterator.class);
-				FileTreeIterator fTree = treeWalk.getTree(fIdx,
-						FileTreeIterator.class);
 
-				// check if entry refers to a tracked file
-				boolean tracked = dcTree != null || hTree != null;
-				if (!tracked)
-					break;
+				if (pos >= 0) {
+					// include entry in commit
 
-				if (fTree != null) {
-					// create a new DirCacheEntry with data retrieved from disk
-					final DirCacheEntry dcEntry = new DirCacheEntry(path);
-					long entryLength = fTree.getEntryLength();
-					dcEntry.setLength(entryLength);
-					dcEntry.setLastModified(fTree.getEntryLastModified());
-					dcEntry.setFileMode(fTree.getIndexFileMode(dcTree));
+					FileTreeIterator fTree = treeWalk.getTree(fIdx,
+							FileTreeIterator.class);
 
-					boolean objectExists = (dcTree != null && fTree
-							.idEqual(dcTree))
-							|| (hTree != null && fTree.idEqual(hTree));
-					if (objectExists) {
-						dcEntry.setObjectId(fTree.getEntryObjectId());
-					} else {
-						if (FileMode.GITLINK.equals(dcEntry.getFileMode()))
+					// check if entry refers to a tracked file
+					boolean tracked = dcTree != null || hTree != null;
+					if (!tracked)
+						continue;
+
+					// for an unmerged path, DirCacheBuildIterator will yield 3
+					// entries, we only want to add one
+					if (path.equals(lastAddedFile))
+						continue;
+
+					lastAddedFile = path;
+
+					if (fTree != null) {
+						// create a new DirCacheEntry with data retrieved from
+						// disk
+						final DirCacheEntry dcEntry = new DirCacheEntry(path);
+						long entryLength = fTree.getEntryLength();
+						dcEntry.setLength(entryLength);
+						dcEntry.setLastModified(fTree.getEntryLastModified());
+						dcEntry.setFileMode(fTree.getIndexFileMode(dcTree));
+
+						boolean objectExists = (dcTree != null
+								&& fTree.idEqual(dcTree))
+								|| (hTree != null && fTree.idEqual(hTree));
+						if (objectExists) {
 							dcEntry.setObjectId(fTree.getEntryObjectId());
-						else {
-							// insert object
-							if (inserter == null)
-								inserter = repo.newObjectInserter();
-							long contentLength = fTree.getEntryContentLength();
-							InputStream inputStream = fTree.openEntryStream();
-							try {
-								dcEntry.setObjectId(inserter.insert(
-										Constants.OBJ_BLOB, contentLength,
-										inputStream));
-							} finally {
-								inputStream.close();
+						} else {
+							if (FileMode.GITLINK.equals(dcEntry.getFileMode()))
+								dcEntry.setObjectId(fTree.getEntryObjectId());
+							else {
+								// insert object
+								if (inserter == null)
+									inserter = repo.newObjectInserter();
+								long contentLength = fTree
+										.getEntryContentLength();
+								InputStream inputStream = fTree
+										.openEntryStream();
+								try {
+									dcEntry.setObjectId(inserter.insert(
+											Constants.OBJ_BLOB, contentLength,
+											inputStream));
+								} finally {
+									inputStream.close();
+								}
 							}
 						}
+
+						// add to existing index
+						existingBuilder.add(dcEntry);
+						// add to temporary in-core index
+						tempBuilder.add(dcEntry);
+
+						if (emptyCommit
+								&& (hTree == null || !hTree.idEqual(fTree)
+										|| hTree.getEntryRawMode() != fTree
+												.getEntryRawMode()))
+							// this is a change
+							emptyCommit = false;
+					} else {
+						// if no file exists on disk, neither add it to
+						// index nor to temporary in-core index
+
+						if (emptyCommit && hTree != null)
+							// this is a change
+							emptyCommit = false;
 					}
 
-					// update index
-					dcEditor.add(new PathEdit(path) {
-						@Override
-						public void apply(DirCacheEntry ent) {
-							ent.copyMetaData(dcEntry);
-						}
-					});
-					// add to temporary in-core index
-					dcBuilder.add(dcEntry);
-
-					if (emptyCommit
-							&& (hTree == null || !hTree.idEqual(fTree) || hTree
-									.getEntryRawMode() != fTree
-									.getEntryRawMode()))
-						// this is a change
-						emptyCommit = false;
+					// keep track of processed path
+					onlyProcessed[pos] = true;
 				} else {
-					// if no file exists on disk, remove entry from index and
-					// don't add it to temporary in-core index
-					dcEditor.add(new DeletePath(path));
+					// add entries from HEAD for all other paths
+					if (hTree != null) {
+						// create a new DirCacheEntry with data retrieved from
+						// HEAD
+						final DirCacheEntry dcEntry = new DirCacheEntry(path);
+						dcEntry.setObjectId(hTree.getEntryObjectId());
+						dcEntry.setFileMode(hTree.getEntryFileMode());
 
-					if (emptyCommit && hTree != null)
-						// this is a change
-						emptyCommit = false;
-				}
+						// add to temporary in-core index
+						tempBuilder.add(dcEntry);
+					}
 
-				// keep track of processed path
-				onlyProcessed[pos] = true;
-			} else {
-				// add entries from HEAD for all other paths
-				if (hTree != null) {
-					// create a new DirCacheEntry with data retrieved from HEAD
-					final DirCacheEntry dcEntry = new DirCacheEntry(path);
-					dcEntry.setObjectId(hTree.getEntryObjectId());
-					dcEntry.setFileMode(hTree.getEntryFileMode());
-
-					// add to temporary in-core index
-					dcBuilder.add(dcEntry);
+					// preserve existing entry in index
+					if (dcTree != null)
+						existingBuilder.add(dcTree.getDirCacheEntry());
 				}
 			}
 		}
@@ -416,12 +483,14 @@ public class CommitCommand extends GitCommand<RevCommit> {
 
 		// there must be at least one change
 		if (emptyCommit)
+			// Would like to throw a EmptyCommitException. But this would break the API
+			// TODO(ch): Change this in the next release
 			throw new JGitInternalException(JGitText.get().emptyCommit);
 
 		// update index
-		dcEditor.commit();
+		existingBuilder.commit();
 		// finish temporary in-core index used for this commit
-		dcBuilder.finish();
+		tempBuilder.finish();
 		return inCoreIndex;
 	}
 
@@ -438,18 +507,15 @@ public class CommitCommand extends GitCommand<RevCommit> {
 	 * @return the item's index in <code>only</code>; -1 if no item matches
 	 */
 	private int lookupOnly(String pathString) {
-		int i = 0;
-		for (String o : only) {
-			String p = pathString;
-			while (true) {
-				if (p.equals(o))
-					return i;
-				int l = p.lastIndexOf("/");
-				if (l < 1)
-					break;
-				p = p.substring(0, l);
-			}
-			i++;
+		String p = pathString;
+		while (true) {
+			int position = Collections.binarySearch(only, p);
+			if (position >= 0)
+				return position;
+			int l = p.lastIndexOf("/"); //$NON-NLS-1$
+			if (l < 1)
+				break;
+			p = p.substring(0, l);
 		}
 		return -1;
 	}
@@ -460,20 +526,36 @@ public class CommitCommand extends GitCommand<RevCommit> {
 	 *
 	 * @param state
 	 *            the state of the repository we are working on
+	 * @param rw
+	 *            the RevWalk to use
 	 *
 	 * @throws NoMessageException
 	 *             if the commit message has not been specified
 	 */
-	private void processOptions(RepositoryState state) throws NoMessageException {
+	private void processOptions(RepositoryState state, RevWalk rw)
+			throws NoMessageException {
 		if (committer == null)
 			committer = new PersonIdent(repo);
-		if (author == null)
+		if (author == null && !amend)
 			author = committer;
+		if (allowEmpty == null)
+			// JGit allows empty commits by default. Only when pathes are
+			// specified the commit should not be empty. This behaviour differs
+			// from native git but can only be adapted in the next release.
+			// TODO(ch) align the defaults with native git
+			allowEmpty = (only.isEmpty()) ? Boolean.TRUE : Boolean.FALSE;
 
 		// when doing a merge commit parse MERGE_HEAD and MERGE_MSG files
-		if (state == RepositoryState.MERGING_RESOLVED) {
+		if (state == RepositoryState.MERGING_RESOLVED
+				|| isMergeDuringRebase(state)) {
 			try {
 				parents = repo.readMergeHeads();
+				if (parents != null)
+					for (int i = 0; i < parents.size(); i++) {
+						RevObject ro = rw.parseAny(parents.get(i));
+						if (ro instanceof RevTag)
+							parents.set(i, rw.peel(ro));
+					}
 			} catch (IOException e) {
 				throw new JGitInternalException(MessageFormat.format(
 						JGitText.get().exceptionOccurredDuringReadingOfGIT_DIR,
@@ -506,6 +588,19 @@ public class CommitCommand extends GitCommand<RevCommit> {
 			throw new NoMessageException(JGitText.get().commitMessageNotSpecified);
 	}
 
+	private boolean isMergeDuringRebase(RepositoryState state) {
+		if (state != RepositoryState.REBASING_INTERACTIVE
+				&& state != RepositoryState.REBASING_MERGE)
+			return false;
+		try {
+			return repo.readMergeHeads() != null;
+		} catch (IOException e) {
+			throw new JGitInternalException(MessageFormat.format(
+					JGitText.get().exceptionOccurredDuringReadingOfGIT_DIR,
+					Constants.MERGE_HEAD, e), e);
+		}
+	}
+
 	/**
 	 * @param message
 	 *            the commit message used for the {@code commit}
@@ -514,6 +609,27 @@ public class CommitCommand extends GitCommand<RevCommit> {
 	public CommitCommand setMessage(String message) {
 		checkCallable();
 		this.message = message;
+		return this;
+	}
+
+	/**
+	 * @param allowEmpty
+	 *            whether it should be allowed to create a commit which has the
+	 *            same tree as it's sole predecessor (a commit which doesn't
+	 *            change anything). By default when creating standard commits
+	 *            (without specifying paths) JGit allows to create such commits.
+	 *            When this flag is set to false an attempt to create an "empty"
+	 *            standard commit will lead to an EmptyCommitException.
+	 *            <p>
+	 *            By default when creating a commit containing only specified
+	 *            paths an attempt to create an empty commit leads to a
+	 *            {@link JGitInternalException}. By setting this flag to
+	 *            <code>true</code> this exception will not be thrown.
+	 * @return {@code this}
+	 * @since 4.2
+	 */
+	public CommitCommand setAllowEmpty(boolean allowEmpty) {
+		this.allowEmpty = Boolean.valueOf(allowEmpty);
 		return this;
 	}
 
@@ -542,9 +658,8 @@ public class CommitCommand extends GitCommand<RevCommit> {
 
 	/**
 	 * Sets the committer for this {@code commit}. If no committer is explicitly
-	 * specified because this method is never called or called with {@code null}
-	 * value then the committer will be deduced from config info in repository,
-	 * with current time.
+	 * specified because this method is never called then the committer will be
+	 * deduced from config info in repository, with current time.
 	 *
 	 * @param name
 	 *            the name of the committer used for the {@code commit}
@@ -570,7 +685,8 @@ public class CommitCommand extends GitCommand<RevCommit> {
 	/**
 	 * Sets the author for this {@code commit}. If no author is explicitly
 	 * specified because this method is never called or called with {@code null}
-	 * value then the author will be set to the committer.
+	 * value then the author will be set to the committer or to the original
+	 * author when amending.
 	 *
 	 * @param author
 	 *            the author used for the {@code commit}
@@ -584,8 +700,8 @@ public class CommitCommand extends GitCommand<RevCommit> {
 
 	/**
 	 * Sets the author for this {@code commit}. If no author is explicitly
-	 * specified because this method is never called or called with {@code null}
-	 * value then the author will be set to the committer.
+	 * specified because this method is never called then the author will be set
+	 * to the committer or to the original author when amending.
 	 *
 	 * @param name
 	 *            the name of the author used for the {@code commit}
@@ -620,10 +736,10 @@ public class CommitCommand extends GitCommand<RevCommit> {
 	 */
 	public CommitCommand setAll(boolean all) {
 		checkCallable();
-		if (!only.isEmpty())
+		if (all && !only.isEmpty())
 			throw new JGitInternalException(MessageFormat.format(
-					JGitText.get().illegalCombinationOfArguments, "--all",
-					"--only"));
+					JGitText.get().illegalCombinationOfArguments, "--all", //$NON-NLS-1$
+					"--only")); //$NON-NLS-1$
 		this.all = all;
 		return this;
 	}
@@ -643,23 +759,23 @@ public class CommitCommand extends GitCommand<RevCommit> {
 	}
 
 	/**
-	 * Commit dedicated path only
-	 *
+	 * Commit dedicated path only.
+	 * <p>
 	 * This method can be called several times to add multiple paths. Full file
 	 * paths are supported as well as directory paths; in the latter case this
-	 * commits all files/ directories below the specified path.
+	 * commits all files/directories below the specified path.
 	 *
 	 * @param only
-	 *            path to commit
+	 *            path to commit (with <code>/</code> as separator)
 	 * @return {@code this}
 	 */
 	public CommitCommand setOnly(String only) {
 		checkCallable();
 		if (all)
 			throw new JGitInternalException(MessageFormat.format(
-					JGitText.get().illegalCombinationOfArguments, "--only",
-					"--all"));
-		String o = only.endsWith("/") ? only.substring(0, only.length() - 1)
+					JGitText.get().illegalCombinationOfArguments, "--only", //$NON-NLS-1$
+					"--all")); //$NON-NLS-1$
+		String o = only.endsWith("/") ? only.substring(0, only.length() - 1) //$NON-NLS-1$
 				: only;
 		// ignore duplicates
 		if (!this.only.contains(o))
@@ -687,11 +803,74 @@ public class CommitCommand extends GitCommand<RevCommit> {
 	 * Override the message written to the reflog
 	 *
 	 * @param reflogComment
+	 *            the comment to be written into the reflog or <code>null</code>
+	 *            to specify that no reflog should be written
 	 * @return {@code this}
 	 */
 	public CommitCommand setReflogComment(String reflogComment) {
 		this.reflogComment = reflogComment;
+		useDefaultReflogMessage = false;
 		return this;
 	}
 
+	/**
+	 * Sets the {@link #noVerify} option on this commit command.
+	 * <p>
+	 * Both the pre-commit and commit-msg hooks can block a commit by their
+	 * return value; setting this option to <code>true</code> will bypass these
+	 * two hooks.
+	 * </p>
+	 *
+	 * @param noVerify
+	 *            Whether this commit should be verified by the pre-commit and
+	 *            commit-msg hooks.
+	 * @return {@code this}
+	 * @since 3.7
+	 */
+	public CommitCommand setNoVerify(boolean noVerify) {
+		this.noVerify = noVerify;
+		return this;
+	}
+
+	/**
+	 * Set the output stream for all hook scripts executed by this command
+	 * (pre-commit, commit-msg, post-commit). If not set it defaults to
+	 * {@code System.out}.
+	 *
+	 * @param hookStdOut
+	 *            the output stream for hook scripts executed by this command
+	 * @return {@code this}
+	 * @since 3.7
+	 */
+	public CommitCommand setHookOutputStream(PrintStream hookStdOut) {
+		setHookOutputStream(PreCommitHook.NAME, hookStdOut);
+		setHookOutputStream(CommitMsgHook.NAME, hookStdOut);
+		setHookOutputStream(PostCommitHook.NAME, hookStdOut);
+		return this;
+	}
+
+	/**
+	 * Set the output stream for a selected hook script executed by this command
+	 * (pre-commit, commit-msg, post-commit). If not set it defaults to
+	 * {@code System.out}.
+	 *
+	 * @param hookName
+	 *            name of the hook to set the output stream for
+	 * @param hookStdOut
+	 *            the output stream to use for the selected hook
+	 * @return {@code this}
+	 * @since 4.5
+	 */
+	public CommitCommand setHookOutputStream(String hookName,
+			PrintStream hookStdOut) {
+		if (!(PreCommitHook.NAME.equals(hookName)
+				|| CommitMsgHook.NAME.equals(hookName)
+				|| PostCommitHook.NAME.equals(hookName))) {
+			throw new IllegalArgumentException(
+					MessageFormat.format(JGitText.get().illegalHookName,
+							hookName));
+		}
+		hookOutRedirect.put(hookName, hookStdOut);
+		return this;
+	}
 }

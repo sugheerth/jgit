@@ -80,6 +80,7 @@ public class DirCacheTree {
 	private static final DirCacheTree[] NO_CHILDREN = {};
 
 	private static final Comparator<DirCacheTree> TREE_CMP = new Comparator<DirCacheTree>() {
+		@Override
 		public int compare(final DirCacheTree o1, final DirCacheTree o2) {
 			final byte[] a = o1.encodedName;
 			final byte[] b = o2.encodedName;
@@ -103,7 +104,7 @@ public class DirCacheTree {
 	private DirCacheTree parent;
 
 	/** Name of this tree within its parent. */
-	private byte[] encodedName;
+	byte[] encodedName;
 
 	/** Number of {@link DirCacheEntry} records that belong to this tree. */
 	private int entrySpan;
@@ -249,7 +250,15 @@ public class DirCacheTree {
 		return children[i];
 	}
 
-	ObjectId getObjectId() {
+	/**
+	 * Get the tree's ObjectId.
+	 * <p>
+	 * If {@link #isValid()} returns false this method will return null.
+	 *
+	 * @return ObjectId of this tree or null.
+	 * @since 4.3
+	 */
+	public ObjectId getObjectId() {
 		return id;
 	}
 
@@ -399,7 +408,7 @@ public class DirCacheTree {
 		for (int eOff = 0; eOff < eLen && aOff < aLen; eOff++, aOff++)
 			if (e[eOff] != a[aOff])
 				return false;
-		if (aOff == aLen)
+		if (aOff >= aLen)
 			return false;
 		return a[aOff] == '/';
 	}
@@ -425,7 +434,7 @@ public class DirCacheTree {
 	 */
 	void validate(final DirCacheEntry[] cache, final int cCnt, int cIdx,
 			final int pathOff) {
-		if (entrySpan >= 0) {
+		if (entrySpan >= 0 && cIdx + entrySpan <= cCnt) {
 			// If we are valid, our children are also valid.
 			// We have no need to validate them.
 			//
@@ -478,6 +487,7 @@ public class DirCacheTree {
 
 			// The entry is contained in this subtree.
 			//
+			assert(st != null);
 			st.validate(cache, cCnt, cIdx, pathOff + st.nameLength() + 1);
 			cIdx += st.entrySpan;
 			entrySpan += st.entrySpan;
@@ -551,5 +561,10 @@ public class DirCacheTree {
 			if (a[aPos] == '/')
 				return aPos;
 		return -1;
+	}
+
+	@Override
+	public String toString() {
+		return getNameString();
 	}
 }

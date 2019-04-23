@@ -50,9 +50,10 @@ import java.io.ByteArrayInputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
-import java.security.MessageDigest;
 
+import org.eclipse.jgit.internal.JGitText;
 import org.eclipse.jgit.transport.PackParser;
+import org.eclipse.jgit.util.sha1.SHA1;
 
 /**
  * Inserts objects into an existing {@code ObjectDatabase}.
@@ -63,10 +64,10 @@ import org.eclipse.jgit.transport.PackParser;
  * <p>
  * Objects written by an inserter may not be immediately visible for reading
  * after the insert method completes. Callers must invoke either
- * {@link #release()} or {@link #flush()} prior to updating references or
+ * {@link #close()} or {@link #flush()} prior to updating references or
  * otherwise making the returned ObjectIds visible to other code.
  */
-public abstract class ObjectInserter {
+public abstract class ObjectInserter implements AutoCloseable {
 	/** An inserter that can be used for formatting and id generation only. */
 	public static class Formatter extends ObjectInserter {
 		@Override
@@ -81,12 +82,17 @@ public abstract class ObjectInserter {
 		}
 
 		@Override
+		public ObjectReader newReader() {
+			throw new UnsupportedOperationException();
+		}
+
+		@Override
 		public void flush() throws IOException {
 			// Do nothing.
 		}
 
 		@Override
-		public void release() {
+		public void close() {
 			// Do nothing.
 		}
 	}
@@ -101,59 +107,83 @@ public abstract class ObjectInserter {
 			return delegate().buffer();
 		}
 
+		@Override
 		public ObjectId idFor(int type, byte[] data) {
 			return delegate().idFor(type, data);
 		}
 
+		@Override
 		public ObjectId idFor(int type, byte[] data, int off, int len) {
 			return delegate().idFor(type, data, off, len);
 		}
 
+		@Override
 		public ObjectId idFor(int objectType, long length, InputStream in)
 				throws IOException {
 			return delegate().idFor(objectType, length, in);
 		}
 
+		@Override
 		public ObjectId idFor(TreeFormatter formatter) {
 			return delegate().idFor(formatter);
 		}
 
+		@Override
 		public ObjectId insert(int type, byte[] data) throws IOException {
 			return delegate().insert(type, data);
 		}
 
+		@Override
 		public ObjectId insert(int type, byte[] data, int off, int len)
 				throws IOException {
 			return delegate().insert(type, data, off, len);
 		}
 
+		@Override
 		public ObjectId insert(int objectType, long length, InputStream in)
 				throws IOException {
 			return delegate().insert(objectType, length, in);
 		}
 
+		@Override
 		public PackParser newPackParser(InputStream in) throws IOException {
 			return delegate().newPackParser(in);
 		}
 
+		@Override
+		public ObjectReader newReader() {
+			final ObjectReader dr = delegate().newReader();
+			return new ObjectReader.Filter() {
+				@Override
+				protected ObjectReader delegate() {
+					return dr;
+				}
+
+				@Override
+				public ObjectInserter getCreatedFromInserter() {
+					return ObjectInserter.Filter.this;
+				}
+			};
+		}
+
+		@Override
 		public void flush() throws IOException {
 			delegate().flush();
 		}
 
-		public void release() {
-			delegate().release();
+		@Override
+		public void close() {
+			delegate().close();
 		}
 	}
 
-	/** Digest to compute the name of an object. */
-	private final MessageDigest digest;
+	private final SHA1 hasher = SHA1.newInstance();
 
 	/** Temporary working buffer for streaming data through. */
 	private byte[] tempBuffer;
 
 	/** Create a new inserter for a database. */
 	protected ObjectInserter() {
-		digest = Constants.newMessageDigest();
 	}
 
 	/**
@@ -187,10 +217,12 @@ public abstract class ObjectInserter {
 		return b;
 	}
 
-	/** @return digest to help compute an ObjectId */
-	protected MessageDigest digest() {
-		digest.reset();
-		return digest;
+	/**
+	 * @return digest to help compute an ObjectId
+	 * @since 4.7
+	 */
+	protected SHA1 digest() {
+		return hasher.reset();
 	}
 
 	/**
@@ -220,13 +252,13 @@ public abstract class ObjectInserter {
 	 * @return the name of the object.
 	 */
 	public ObjectId idFor(int type, byte[] data, int off, int len) {
-		MessageDigest md = digest();
+		SHA1 md = SHA1.newInstance();
 		md.update(Constants.encodedTypeString(type));
 		md.update((byte) ' ');
 		md.update(Constants.encodeASCII(len));
 		md.update((byte) 0);
 		md.update(data, off, len);
-		return ObjectId.fromRaw(md.digest());
+		return md.toObjectId();
 	}
 
 	/**
@@ -245,7 +277,7 @@ public abstract class ObjectInserter {
 	 */
 	public ObjectId idFor(int objectType, long length, InputStream in)
 			throws IOException {
-		MessageDigest md = digest();
+		SHA1 md = SHA1.newInstance();
 		md.update(Constants.encodedTypeString(objectType));
 		md.update((byte) ' ');
 		md.update(Constants.encodeASCII(length));
@@ -254,11 +286,11 @@ public abstract class ObjectInserter {
 		while (length > 0) {
 			int n = in.read(buf, 0, (int) Math.min(length, buf.length));
 			if (n < 0)
-				throw new EOFException("Unexpected end of input");
+				throw new EOFException(JGitText.get().unexpectedEndOfInput);
 			md.update(buf, 0, n);
 			length -= n;
 		}
-		return ObjectId.fromRaw(md.digest());
+		return md.toObjectId();
 	}
 
 	/**
@@ -381,6 +413,24 @@ public abstract class ObjectInserter {
 	public abstract PackParser newPackParser(InputStream in) throws IOException;
 
 	/**
+	 * Open a reader for objects that may have been written by this inserter.
+	 * <p>
+	 * The returned reader allows the calling thread to read back recently
+	 * inserted objects without first calling {@code flush()} to make them
+	 * visible to the repository. The returned reader should only be used from
+	 * the same thread as the inserter. Objects written by this inserter may not
+	 * be visible to {@code this.newReader().newReader()}.
+	 * <p>
+	 * The returned reader should return this inserter instance from {@link
+	 * ObjectReader#getCreatedFromInserter()}.
+	 *
+	 * @since 3.5
+	 * @return reader for any object, including an object recently inserted by
+	 *         this inserter since the last flush.
+	 */
+	public abstract ObjectReader newReader();
+
+	/**
 	 * Make all inserted objects visible.
 	 * <p>
 	 * The flush may take some period of time to make the objects available to
@@ -397,6 +447,9 @@ public abstract class ObjectInserter {
 	 * <p>
 	 * An inserter that has been released can be used again, but may need to be
 	 * released after the subsequent usage.
+	 *
+	 * @since 4.0
 	 */
-	public abstract void release();
+	@Override
+	public abstract void close();
 }

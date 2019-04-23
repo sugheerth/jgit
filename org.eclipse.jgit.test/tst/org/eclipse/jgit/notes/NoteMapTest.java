@@ -54,6 +54,7 @@ import static org.junit.Assert.assertTrue;
 import java.io.IOException;
 import java.util.Iterator;
 
+import org.eclipse.jgit.junit.RepositoryTestCase;
 import org.eclipse.jgit.junit.TestRepository;
 import org.eclipse.jgit.lib.CommitBuilder;
 import org.eclipse.jgit.lib.Constants;
@@ -61,7 +62,6 @@ import org.eclipse.jgit.lib.MutableObjectId;
 import org.eclipse.jgit.lib.ObjectInserter;
 import org.eclipse.jgit.lib.ObjectReader;
 import org.eclipse.jgit.lib.Repository;
-import org.eclipse.jgit.lib.RepositoryTestCase;
 import org.eclipse.jgit.revwalk.RevBlob;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevTree;
@@ -83,7 +83,7 @@ public class NoteMapTest extends RepositoryTestCase {
 	public void setUp() throws Exception {
 		super.setUp();
 
-		tr = new TestRepository<Repository>(db);
+		tr = new TestRepository<>(db);
 		reader = db.newObjectReader();
 		inserter = db.newObjectInserter();
 	}
@@ -91,8 +91,8 @@ public class NoteMapTest extends RepositoryTestCase {
 	@Override
 	@After
 	public void tearDown() throws Exception {
-		reader.release();
-		inserter.release();
+		reader.close();
+		inserter.close();
 		super.tearDown();
 	}
 
@@ -403,10 +403,12 @@ public class NoteMapTest extends RepositoryTestCase {
 		}
 
 		RevCommit n = commitNoteMap(map);
-		TreeWalk tw = new TreeWalk(reader);
-		tw.reset(n.getTree());
-		while (tw.next())
-			assertFalse("no fan-out subtree", tw.isSubtree());
+		try (TreeWalk tw = new TreeWalk(reader)) {
+			tw.reset(n.getTree());
+			while (tw.next()) {
+				assertFalse("no fan-out subtree", tw.isSubtree());
+			}
+		}
 
 		for (int i = 254; i < 256; i++) {
 			idBuf.setByte(Constants.OBJECT_ID_LENGTH - 1, i);
@@ -418,13 +420,15 @@ public class NoteMapTest extends RepositoryTestCase {
 
 		// The 00 bucket is fully split.
 		String path = fanout(38, idBuf.name());
-		tw = TreeWalk.forPath(reader, path, n.getTree());
-		assertNotNull("has " + path, tw);
+		try (TreeWalk tw = TreeWalk.forPath(reader, path, n.getTree())) {
+			assertNotNull("has " + path, tw);
+		}
 
 		// The other bucket is not.
 		path = fanout(2, data1.name());
-		tw = TreeWalk.forPath(reader, path, n.getTree());
-		assertNotNull("has " + path, tw);
+		try (TreeWalk tw = TreeWalk.forPath(reader, path, n.getTree())) {
+			assertNotNull("has " + path, tw);
+		}
 	}
 
 	@Test
@@ -445,11 +449,13 @@ public class NoteMapTest extends RepositoryTestCase {
 		assertEquals("empty tree", empty, n.getTree());
 	}
 
+	@Test
 	public void testIteratorEmptyMap() {
 		Iterator<Note> it = NoteMap.newEmptyMap().iterator();
 		assertFalse(it.hasNext());
 	}
 
+	@Test
 	public void testIteratorFlatTree() throws Exception {
 		RevBlob a = tr.blob("a");
 		RevBlob b = tr.blob("b");
@@ -468,6 +474,7 @@ public class NoteMapTest extends RepositoryTestCase {
 		assertEquals(2, count(it));
 	}
 
+	@Test
 	public void testIteratorFanoutTree2_38() throws Exception {
 		RevBlob a = tr.blob("a");
 		RevBlob b = tr.blob("b");
@@ -486,6 +493,7 @@ public class NoteMapTest extends RepositoryTestCase {
 		assertEquals(2, count(it));
 	}
 
+	@Test
 	public void testIteratorFanoutTree2_2_36() throws Exception {
 		RevBlob a = tr.blob("a");
 		RevBlob b = tr.blob("b");
@@ -504,6 +512,7 @@ public class NoteMapTest extends RepositoryTestCase {
 		assertEquals(2, count(it));
 	}
 
+	@Test
 	public void testIteratorFullyFannedOut() throws Exception {
 		RevBlob a = tr.blob("a");
 		RevBlob b = tr.blob("b");
@@ -522,12 +531,13 @@ public class NoteMapTest extends RepositoryTestCase {
 		assertEquals(2, count(it));
 	}
 
+	@Test
 	public void testShorteningNoteRefName() throws Exception {
 		String expectedShortName = "review";
 		String noteRefName = Constants.R_NOTES + expectedShortName;
 		assertEquals(expectedShortName, NoteMap.shortenRefName(noteRefName));
 		String nonNoteRefName = Constants.R_HEADS + expectedShortName;
-		assertEquals(nonNoteRefName, NoteMap.shortenRefName(expectedShortName));
+		assertEquals(nonNoteRefName, NoteMap.shortenRefName(nonNoteRefName));
 	}
 
 	private RevCommit commitNoteMap(NoteMap map) throws IOException {

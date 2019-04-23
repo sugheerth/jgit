@@ -45,18 +45,29 @@ package org.eclipse.jgit.pgm;
 
 import java.io.File;
 import java.net.InetSocketAddress;
+import java.net.URISyntaxException;
 import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executors;
 
+import org.eclipse.jgit.internal.ketch.KetchLeader;
+import org.eclipse.jgit.internal.ketch.KetchLeaderCache;
+import org.eclipse.jgit.internal.ketch.KetchPreReceive;
+import org.eclipse.jgit.internal.ketch.KetchSystem;
+import org.eclipse.jgit.internal.ketch.KetchText;
+import org.eclipse.jgit.lib.Repository;
+import org.eclipse.jgit.pgm.internal.CLIText;
 import org.eclipse.jgit.storage.file.FileBasedConfig;
-import org.eclipse.jgit.storage.file.WindowCache;
 import org.eclipse.jgit.storage.file.WindowCacheConfig;
 import org.eclipse.jgit.storage.pack.PackConfig;
 import org.eclipse.jgit.transport.DaemonClient;
 import org.eclipse.jgit.transport.DaemonService;
+import org.eclipse.jgit.transport.ReceivePack;
 import org.eclipse.jgit.transport.resolver.FileResolver;
+import org.eclipse.jgit.transport.resolver.ReceivePackFactory;
+import org.eclipse.jgit.transport.resolver.ServiceNotAuthorizedException;
+import org.eclipse.jgit.transport.resolver.ServiceNotEnabledException;
 import org.eclipse.jgit.util.FS;
 import org.kohsuke.args4j.Argument;
 import org.kohsuke.args4j.Option;
@@ -76,22 +87,29 @@ class Daemon extends TextBuiltin {
 	int timeout = -1;
 
 	@Option(name = "--enable", metaVar = "metaVar_service", usage = "usage_enableTheServiceInAllRepositories", multiValued = true)
-	final List<String> enable = new ArrayList<String>();
+	final List<String> enable = new ArrayList<>();
 
 	@Option(name = "--disable", metaVar = "metaVar_service", usage = "usage_disableTheServiceInAllRepositories", multiValued = true)
-	final List<String> disable = new ArrayList<String>();
+	final List<String> disable = new ArrayList<>();
 
 	@Option(name = "--allow-override", metaVar = "metaVar_service", usage = "usage_configureTheServiceInDaemonServicename", multiValued = true)
-	final List<String> canOverride = new ArrayList<String>();
+	final List<String> canOverride = new ArrayList<>();
 
 	@Option(name = "--forbid-override", metaVar = "metaVar_service", usage = "usage_configureTheServiceInDaemonServicename", multiValued = true)
-	final List<String> forbidOverride = new ArrayList<String>();
+	final List<String> forbidOverride = new ArrayList<>();
 
 	@Option(name = "--export-all", usage = "usage_exportWithoutGitDaemonExportOk")
 	boolean exportAll;
 
+	@Option(name = "--ketch", metaVar = "metaVar_ketchServerType", usage = "usage_ketchServerType")
+	KetchServerType ketchServerType;
+
+	enum KetchServerType {
+		LEADER;
+	}
+
 	@Argument(required = true, metaVar = "metaVar_directory", usage = "usage_directoriesToExport")
-	final List<File> directory = new ArrayList<File>();
+	final List<File> directory = new ArrayList<>();
 
 	@Override
 	protected boolean requiresRepository() {
@@ -111,11 +129,7 @@ class Daemon extends TextBuiltin {
 
 			FileBasedConfig cfg = new FileBasedConfig(configFile, FS.DETECTED);
 			cfg.load();
-
-			WindowCacheConfig wcc = new WindowCacheConfig();
-			wcc.fromConfig(cfg);
-			WindowCache.reconfigure(wcc);
-
+			new WindowCacheConfig().fromConfig(cfg).install();
 			packConfig.fromConfig(cfg);
 		}
 
@@ -125,9 +139,9 @@ class Daemon extends TextBuiltin {
 		if (1 < threads)
 			packConfig.setExecutor(Executors.newFixedThreadPool(threads));
 
-		final FileResolver<DaemonClient> resolver = new FileResolver<DaemonClient>();
+		final FileResolver<DaemonClient> resolver = new FileResolver<>();
 		for (final File f : directory) {
-			out.println(MessageFormat.format(CLIText.get().exporting, f.getAbsolutePath()));
+			outw.println(MessageFormat.format(CLIText.get().exporting, f.getAbsolutePath()));
 			resolver.exportDirectory(f);
 		}
 		resolver.setExportAll(exportAll);
@@ -150,16 +164,44 @@ class Daemon extends TextBuiltin {
 			service(d, n).setOverridable(true);
 		for (final String n : forbidOverride)
 			service(d, n).setOverridable(false);
-
+		if (ketchServerType == KetchServerType.LEADER) {
+			startKetchLeader(d);
+		}
 		d.start();
-		out.println(MessageFormat.format(CLIText.get().listeningOn, d.getAddress()));
+		outw.println(MessageFormat.format(CLIText.get().listeningOn, d.getAddress()));
 	}
 
-	private DaemonService service(final org.eclipse.jgit.transport.Daemon d,
+	private static DaemonService service(
+			final org.eclipse.jgit.transport.Daemon d,
 			final String n) {
 		final DaemonService svc = d.getService(n);
 		if (svc == null)
 			throw die(MessageFormat.format(CLIText.get().serviceNotSupported, n));
 		return svc;
+	}
+
+	private void startKetchLeader(org.eclipse.jgit.transport.Daemon daemon) {
+		KetchSystem system = new KetchSystem();
+		final KetchLeaderCache leaders = new KetchLeaderCache(system);
+		final ReceivePackFactory<DaemonClient> factory;
+
+		factory = daemon.getReceivePackFactory();
+		daemon.setReceivePackFactory(new ReceivePackFactory<DaemonClient>() {
+			@Override
+			public ReceivePack create(DaemonClient req, Repository repo)
+					throws ServiceNotEnabledException,
+					ServiceNotAuthorizedException {
+				ReceivePack rp = factory.create(req, repo);
+				KetchLeader leader;
+				try {
+					leader = leaders.get(repo);
+				} catch (URISyntaxException err) {
+					throw new ServiceNotEnabledException(
+							KetchText.get().invalidFollowerUri, err);
+				}
+				rp.setPreReceiveHook(new KetchPreReceive(leader));
+				return rp;
+			}
+		});
 	}
 }

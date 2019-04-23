@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2011, Chris Aniszczyk <caniszczyk@gmail.com>
+ * Copyright (C) 2011, 2013 Chris Aniszczyk <caniszczyk@gmail.com> and others.
  * and other copyright owners as documented in the project's IP log.
  *
  * This program and the accompanying materials are made available
@@ -48,16 +48,17 @@ import static org.junit.Assert.assertNotNull;
 import java.io.File;
 import java.util.Collection;
 
+import org.eclipse.jgit.junit.RepositoryTestCase;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.RefUpdate;
-import org.eclipse.jgit.lib.RepositoryTestCase;
 import org.junit.Test;
 
 public class LsRemoteCommandTest extends RepositoryTestCase {
 
 	private Git git;
 
+	@Override
 	public void setUp() throws Exception {
 		super.setUp();
 		git = new Git(db);
@@ -82,7 +83,7 @@ public class LsRemoteCommandTest extends RepositoryTestCase {
 		File directory = createTempDirectory("testRepository");
 		CloneCommand command = Git.cloneRepository();
 		command.setDirectory(directory);
-		command.setURI("file://" + git.getRepository().getWorkTree().getPath());
+		command.setURI(fileUri());
 		command.setCloneAllBranches(true);
 		Git git2 = command.call();
 		addRepoToClose(git2.getRepository());
@@ -99,7 +100,7 @@ public class LsRemoteCommandTest extends RepositoryTestCase {
 		File directory = createTempDirectory("testRepository");
 		CloneCommand command = Git.cloneRepository();
 		command.setDirectory(directory);
-		command.setURI("file://" + git.getRepository().getWorkTree().getPath());
+		command.setURI(fileUri());
 		command.setCloneAllBranches(true);
 		Git git2 = command.call();
 		addRepoToClose(git2.getRepository());
@@ -116,7 +117,7 @@ public class LsRemoteCommandTest extends RepositoryTestCase {
 		File directory = createTempDirectory("testRepository");
 		CloneCommand command = Git.cloneRepository();
 		command.setDirectory(directory);
-		command.setURI("file://" + git.getRepository().getWorkTree().getPath());
+		command.setURI(fileUri());
 		command.setCloneAllBranches(true);
 		Git git2 = command.call();
 		addRepoToClose(git2.getRepository());
@@ -126,6 +127,18 @@ public class LsRemoteCommandTest extends RepositoryTestCase {
 		Collection<Ref> refs = lsRemoteCommand.call();
 		assertNotNull(refs);
 		assertEquals(2, refs.size());
+	}
+
+	@Test
+	public void testLsRemoteWithoutLocalRepository() throws Exception {
+		String uri = fileUri();
+		Collection<Ref> refs = Git.lsRemoteRepository().setRemote(uri).setHeads(true).call();
+		assertNotNull(refs);
+		assertEquals(2, refs.size());
+	}
+
+	private String fileUri() {
+		return "file://" + git.getRepository().getWorkTree().getAbsolutePath();
 	}
 
 }

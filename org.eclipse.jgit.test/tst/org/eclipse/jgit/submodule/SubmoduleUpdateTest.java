@@ -57,12 +57,12 @@ import org.eclipse.jgit.dircache.DirCache;
 import org.eclipse.jgit.dircache.DirCacheEditor;
 import org.eclipse.jgit.dircache.DirCacheEditor.PathEdit;
 import org.eclipse.jgit.dircache.DirCacheEntry;
+import org.eclipse.jgit.junit.RepositoryTestCase;
 import org.eclipse.jgit.lib.ConfigConstants;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.FileMode;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Repository;
-import org.eclipse.jgit.lib.RepositoryTestCase;
 import org.eclipse.jgit.lib.StoredConfig;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.storage.file.FileBasedConfig;
@@ -93,6 +93,7 @@ public class SubmoduleUpdateTest extends RepositoryTestCase {
 		DirCacheEditor editor = cache.editor();
 		editor.add(new PathEdit(path) {
 
+			@Override
 			public void apply(DirCacheEntry ent) {
 				ent.setFileMode(FileMode.GITLINK);
 				ent.setObjectId(commit);
@@ -121,9 +122,9 @@ public class SubmoduleUpdateTest extends RepositoryTestCase {
 		SubmoduleWalk generator = SubmoduleWalk.forIndex(db);
 		assertTrue(generator.next());
 		Repository subRepo = generator.getRepository();
-		addRepoToClose(subRepo);
 		assertNotNull(subRepo);
 		assertEquals(commit, subRepo.resolve(Constants.HEAD));
+		subRepo.close();
 	}
 
 	@Test
@@ -136,6 +137,7 @@ public class SubmoduleUpdateTest extends RepositoryTestCase {
 		DirCacheEditor editor = cache.editor();
 		editor.add(new PathEdit(path) {
 
+			@Override
 			public void apply(DirCacheEntry ent) {
 				ent.setFileMode(FileMode.GITLINK);
 				ent.setObjectId(id);
@@ -171,6 +173,7 @@ public class SubmoduleUpdateTest extends RepositoryTestCase {
 		DirCacheEditor editor = cache.editor();
 		editor.add(new PathEdit(path) {
 
+			@Override
 			public void apply(DirCacheEntry ent) {
 				ent.setFileMode(FileMode.GITLINK);
 				ent.setObjectId(id);

@@ -51,7 +51,9 @@ import java.util.Date;
 import java.util.Locale;
 import java.util.TimeZone;
 
+import org.eclipse.jgit.internal.JGitText;
 import org.eclipse.jgit.util.SystemReader;
+import org.eclipse.jgit.util.time.ProposedTimestamp;
 
 /**
  * A combination of a person identity and time in Git.
@@ -61,6 +63,92 @@ import org.eclipse.jgit.util.SystemReader;
  */
 public class PersonIdent implements Serializable {
 	private static final long serialVersionUID = 1L;
+
+	/**
+	 * @param tzOffset
+	 *            timezone offset as in {@link #getTimeZoneOffset()}.
+	 * @return time zone object for the given offset.
+	 * @since 4.1
+	 */
+	public static TimeZone getTimeZone(int tzOffset) {
+		StringBuilder tzId = new StringBuilder(8);
+		tzId.append("GMT"); //$NON-NLS-1$
+		appendTimezone(tzId, tzOffset);
+		return TimeZone.getTimeZone(tzId.toString());
+	}
+
+	/**
+	 * Format a timezone offset.
+	 *
+	 * @param r
+	 *            string builder to append to.
+	 * @param offset
+	 *            timezone offset as in {@link #getTimeZoneOffset()}.
+	 * @since 4.1
+	 */
+	public static void appendTimezone(StringBuilder r, int offset) {
+		final char sign;
+		final int offsetHours;
+		final int offsetMins;
+
+		if (offset < 0) {
+			sign = '-';
+			offset = -offset;
+		} else {
+			sign = '+';
+		}
+
+		offsetHours = offset / 60;
+		offsetMins = offset % 60;
+
+		r.append(sign);
+		if (offsetHours < 10) {
+			r.append('0');
+		}
+		r.append(offsetHours);
+		if (offsetMins < 10) {
+			r.append('0');
+		}
+		r.append(offsetMins);
+	}
+
+	/**
+	 * Sanitize the given string for use in an identity and append to output.
+	 * <p>
+	 * Trims whitespace from both ends and special characters {@code \n < >} that
+	 * interfere with parsing; appends all other characters to the output.
+	 * Analogous to the C git function {@code strbuf_addstr_without_crud}.
+	 *
+	 * @param r
+	 *            string builder to append to.
+	 * @param str
+	 *            input string.
+	 * @since 4.4
+	 */
+	public static void appendSanitized(StringBuilder r, String str) {
+		// Trim any whitespace less than \u0020 as in String#trim().
+		int i = 0;
+		while (i < str.length() && str.charAt(i) <= ' ') {
+			i++;
+		}
+		int end = str.length();
+		while (end > i && str.charAt(end - 1) <= ' ') {
+			end--;
+		}
+
+		for (; i < end; i++) {
+			char c = str.charAt(i);
+			switch (c) {
+				case '\n':
+				case '<':
+				case '>':
+					continue;
+				default:
+					r.append(c);
+					break;
+			}
+		}
+	}
 
 	private final String name;
 
@@ -78,11 +166,7 @@ public class PersonIdent implements Serializable {
 	 * @param repo
 	 */
 	public PersonIdent(final Repository repo) {
-		final UserConfig config = repo.getConfig().get(UserConfig.KEY);
-		name = config.getCommitterName();
-		emailAddress = config.getCommitterEmail();
-		when = SystemReader.getInstance().getCurrentTime();
-		tzOffset = SystemReader.getInstance().getTimezone(when);
+		this(repo.getConfig().get(UserConfig.KEY));
 	}
 
 	/**
@@ -102,10 +186,20 @@ public class PersonIdent implements Serializable {
 	 * @param aEmailAddress
 	 */
 	public PersonIdent(final String aName, final String aEmailAddress) {
-		name = aName;
-		emailAddress = aEmailAddress;
-		when = SystemReader.getInstance().getCurrentTime();
-		tzOffset = SystemReader.getInstance().getTimezone(when);
+		this(aName, aEmailAddress, SystemReader.getInstance().getCurrentTime());
+	}
+
+	/**
+	 * Construct a new {@link PersonIdent} with current time.
+	 *
+	 * @param aName
+	 * @param aEmailAddress
+	 * @param when
+	 * @since 4.6
+	 */
+	public PersonIdent(String aName, String aEmailAddress,
+			ProposedTimestamp when) {
+		this(aName, aEmailAddress, when.millis());
 	}
 
 	/**
@@ -131,10 +225,7 @@ public class PersonIdent implements Serializable {
 	 *            local time
 	 */
 	public PersonIdent(final PersonIdent pi, final Date aWhen) {
-		name = pi.getName();
-		emailAddress = pi.getEmailAddress();
-		when = aWhen.getTime();
-		tzOffset = pi.tzOffset;
+		this(pi.getName(), pi.getEmailAddress(), aWhen.getTime(), pi.tzOffset);
 	}
 
 	/**
@@ -149,28 +240,8 @@ public class PersonIdent implements Serializable {
 	 */
 	public PersonIdent(final String aName, final String aEmailAddress,
 			final Date aWhen, final TimeZone aTZ) {
-		name = aName;
-		emailAddress = aEmailAddress;
-		when = aWhen.getTime();
-		tzOffset = aTZ.getOffset(when) / (60 * 1000);
-	}
-
-	/**
-	 * Construct a {@link PersonIdent}
-	 *
-	 * @param aName
-	 * @param aEmailAddress
-	 * @param aWhen
-	 *            local time stamp
-	 * @param aTZ
-	 *            time zone
-	 */
-	public PersonIdent(final String aName, final String aEmailAddress,
-			final long aWhen, final int aTZ) {
-		name = aName;
-		emailAddress = aEmailAddress;
-		when = aWhen;
-		tzOffset = aTZ;
+		this(aName, aEmailAddress, aWhen.getTime(), aTZ.getOffset(aWhen
+				.getTime()) / (60 * 1000));
 	}
 
 	/**
@@ -184,8 +255,44 @@ public class PersonIdent implements Serializable {
 	 *            time zone
 	 */
 	public PersonIdent(final PersonIdent pi, final long aWhen, final int aTZ) {
-		name = pi.getName();
-		emailAddress = pi.getEmailAddress();
+		this(pi.getName(), pi.getEmailAddress(), aWhen, aTZ);
+	}
+
+	private PersonIdent(final String aName, final String aEmailAddress,
+			long when) {
+		this(aName, aEmailAddress, when, SystemReader.getInstance()
+				.getTimezone(when));
+	}
+
+	private PersonIdent(final UserConfig config) {
+		this(config.getCommitterName(), config.getCommitterEmail());
+	}
+
+	/**
+	 * Construct a {@link PersonIdent}.
+	 * <p>
+	 * Whitespace in the name and email is preserved for the lifetime of this
+	 * object, but are trimmed by {@link #toExternalString()}. This means that
+	 * parsing the result of {@link #toExternalString()} may not return an
+	 * equivalent instance.
+	 *
+	 * @param aName
+	 * @param aEmailAddress
+	 * @param aWhen
+	 *            local time stamp
+	 * @param aTZ
+	 *            time zone
+	 */
+	public PersonIdent(final String aName, final String aEmailAddress,
+			final long aWhen, final int aTZ) {
+		if (aName == null)
+			throw new IllegalArgumentException(
+					JGitText.get().personIdentNameNonNull);
+		if (aEmailAddress == null)
+			throw new IllegalArgumentException(
+					JGitText.get().personIdentEmailNonNull);
+		name = aName;
+		emailAddress = aEmailAddress;
 		when = aWhen;
 		tzOffset = aTZ;
 	}
@@ -215,10 +322,7 @@ public class PersonIdent implements Serializable {
 	 * @return this person's declared time zone; null if time zone is unknown.
 	 */
 	public TimeZone getTimeZone() {
-		StringBuilder tzId = new StringBuilder(8);
-		tzId.append("GMT");
-		appendTimezone(tzId);
-		return TimeZone.getTimeZone(tzId.toString());
+		return getTimeZone(tzOffset);
 	}
 
 	/**
@@ -229,6 +333,10 @@ public class PersonIdent implements Serializable {
 		return tzOffset;
 	}
 
+	/**
+	 * Hashcode is based only on the email address and timestamp.
+	 */
+	@Override
 	public int hashCode() {
 		int hc = getEmailAddress().hashCode();
 		hc *= 31;
@@ -236,6 +344,7 @@ public class PersonIdent implements Serializable {
 		return hc;
 	}
 
+	@Override
 	public boolean equals(final Object o) {
 		if (o instanceof PersonIdent) {
 			final PersonIdent p = (PersonIdent) o;
@@ -253,43 +362,18 @@ public class PersonIdent implements Serializable {
 	 */
 	public String toExternalString() {
 		final StringBuilder r = new StringBuilder();
-		r.append(getName());
-		r.append(" <");
-		r.append(getEmailAddress());
-		r.append("> ");
+		appendSanitized(r, getName());
+		r.append(" <"); //$NON-NLS-1$
+		appendSanitized(r, getEmailAddress());
+		r.append("> "); //$NON-NLS-1$
 		r.append(when / 1000);
 		r.append(' ');
-		appendTimezone(r);
+		appendTimezone(r, tzOffset);
 		return r.toString();
 	}
 
-	private void appendTimezone(final StringBuilder r) {
-		int offset = tzOffset;
-		final char sign;
-		final int offsetHours;
-		final int offsetMins;
-
-		if (offset < 0) {
-			sign = '-';
-			offset = -offset;
-		} else {
-			sign = '+';
-		}
-
-		offsetHours = offset / 60;
-		offsetMins = offset % 60;
-
-		r.append(sign);
-		if (offsetHours < 10) {
-			r.append('0');
-		}
-		r.append(offsetHours);
-		if (offsetMins < 10) {
-			r.append('0');
-		}
-		r.append(offsetMins);
-	}
-
+	@Override
+	@SuppressWarnings("nls")
 	public String toString() {
 		final StringBuilder r = new StringBuilder();
 		final SimpleDateFormat dtfmt;
@@ -307,3 +391,4 @@ public class PersonIdent implements Serializable {
 		return r.toString();
 	}
 }
+

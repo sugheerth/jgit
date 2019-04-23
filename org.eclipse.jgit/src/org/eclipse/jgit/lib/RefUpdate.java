@@ -52,6 +52,7 @@ import org.eclipse.jgit.internal.JGitText;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevObject;
 import org.eclipse.jgit.revwalk.RevWalk;
+import org.eclipse.jgit.transport.PushCertificate;
 
 /**
  * Creates, updates or deletes any reference.
@@ -165,6 +166,9 @@ public abstract class RefUpdate {
 	/** Result of the update operation. */
 	private Result result = Result.NOT_ATTEMPTED;
 
+	/** Push certificate associated with this update. */
+	private PushCertificate pushCert;
+
 	private final Ref ref;
 
 	/**
@@ -178,6 +182,8 @@ public abstract class RefUpdate {
 	 */
 	private boolean detachingSymbolicRef;
 
+	private boolean checkConflicting = true;
+
 	/**
 	 * Construct a new update operation for the reference.
 	 * <p>
@@ -190,7 +196,7 @@ public abstract class RefUpdate {
 	protected RefUpdate(final Ref ref) {
 		this.ref = ref;
 		oldValue = ref.getObjectId();
-		refLogMessage = "";
+		refLogMessage = ""; //$NON-NLS-1$
 	}
 
 	/** @return the reference database this update modifies. */
@@ -372,7 +378,7 @@ public abstract class RefUpdate {
 		if (msg == null && !appendStatus)
 			disableRefLog();
 		else if (msg == null && appendStatus) {
-			refLogMessage = "";
+			refLogMessage = ""; //$NON-NLS-1$
 			refLogIncludeResult = true;
 		} else {
 			refLogMessage = msg;
@@ -409,6 +415,31 @@ public abstract class RefUpdate {
 	 */
 	protected void setOldObjectId(ObjectId old) {
 		oldValue = old;
+	}
+
+	/**
+	 * Set a push certificate associated with this update.
+	 * <p>
+	 * This usually includes a command to update this ref, but is not required to.
+	 *
+	 * @param cert
+	 *            push certificate, may be null.
+	 * @since 4.1
+	 */
+	public void setPushCertificate(PushCertificate cert) {
+		pushCert = cert;
+	}
+
+	/**
+	 * Set the push certificate associated with this update.
+	 * <p>
+	 * This usually includes a command to update this ref, but is not required to.
+	 *
+	 * @return push certificate, may be null.
+	 * @since 4.1
+	 */
+	protected PushCertificate getPushCertificate() {
+		return pushCert;
 	}
 
 	/**
@@ -458,11 +489,8 @@ public abstract class RefUpdate {
 	 *             an unexpected IO error occurred while writing changes.
 	 */
 	public Result update() throws IOException {
-		RevWalk rw = new RevWalk(getRepository());
-		try {
+		try (RevWalk rw = new RevWalk(getRepository())) {
 			return update(rw);
-		} finally {
-			rw.release();
 		}
 	}
 
@@ -508,11 +536,8 @@ public abstract class RefUpdate {
 	 * @throws IOException
 	 */
 	public Result delete() throws IOException {
-		RevWalk rw = new RevWalk(getRepository());
-		try {
+		try (RevWalk rw = new RevWalk(getRepository())) {
 			return delete(rw);
-		} finally {
-			rw.release();
 		}
 	}
 
@@ -526,10 +551,13 @@ public abstract class RefUpdate {
 	 * @throws IOException
 	 */
 	public Result delete(final RevWalk walk) throws IOException {
-		final String myName = getRef().getLeaf().getName();
-		if (myName.startsWith(Constants.R_HEADS)) {
+		final String myName = detachingSymbolicRef
+				? getRef().getName()
+				: getRef().getLeaf().getName();
+		if (myName.startsWith(Constants.R_HEADS) && !getRepository().isBare()) {
+			// Don't allow the currently checked out branch to be deleted.
 			Ref head = getRefDatabase().getRef(Constants.HEAD);
-			while (head.isSymbolic()) {
+			while (head != null && head.isSymbolic()) {
 				head = head.getTarget();
 				if (myName.equals(head.getName()))
 					return result = Result.REJECTED_CURRENT_BRANCH;
@@ -564,7 +592,7 @@ public abstract class RefUpdate {
 	public Result link(String target) throws IOException {
 		if (!target.startsWith(Constants.R_REFS))
 			throw new IllegalArgumentException(MessageFormat.format(JGitText.get().illegalArgumentNotA, Constants.R_REFS));
-		if (getRefDatabase().isNameConflicting(getName()))
+		if (checkConflicting && getRefDatabase().isNameConflicting(getName()))
 			return Result.LOCK_FAILURE;
 		try {
 			if (!tryLock(false))
@@ -598,10 +626,14 @@ public abstract class RefUpdate {
 		RevObject newObj;
 		RevObject oldObj;
 
-		if (getRefDatabase().isNameConflicting(getName()))
+		// don't make expensive conflict check if this is an existing Ref
+		if (oldValue == null && checkConflicting && getRefDatabase().isNameConflicting(getName()))
 			return Result.LOCK_FAILURE;
 		try {
-			if (!tryLock(true))
+			// If we're detaching a symbolic reference, we should update the reference
+			// itself. Otherwise, we will update the leaf reference, which should be
+			// an ObjectIdRef.
+			if (!tryLock(!detachingSymbolicRef))
 				return Result.LOCK_FAILURE;
 			if (expValue != null) {
 				final ObjectId o;
@@ -617,17 +649,29 @@ public abstract class RefUpdate {
 			if (newObj == oldObj && !detachingSymbolicRef)
 				return store.execute(Result.NO_CHANGE);
 
+			if (isForceUpdate())
+				return store.execute(Result.FORCED);
+
 			if (newObj instanceof RevCommit && oldObj instanceof RevCommit) {
 				if (walk.isMergedInto((RevCommit) oldObj, (RevCommit) newObj))
 					return store.execute(Result.FAST_FORWARD);
 			}
 
-			if (isForceUpdate())
-				return store.execute(Result.FORCED);
 			return Result.REJECTED;
 		} finally {
 			unlock();
 		}
+	}
+
+	/**
+	 * Enable/disable the check for conflicting ref names. By default conflicts
+	 * are checked explicitly.
+	 *
+	 * @param check
+	 * @since 3.0
+	 */
+	public void setCheckConflicting(boolean check) {
+		checkConflicting = check;
 	}
 
 	private static RevObject safeParse(final RevWalk rw, final AnyObjectId id)

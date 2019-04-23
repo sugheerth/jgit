@@ -48,10 +48,12 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Set;
 
+import org.eclipse.jgit.dircache.DirCacheEntry;
 import org.eclipse.jgit.dircache.DirCacheIterator;
 import org.eclipse.jgit.errors.IncorrectObjectTypeException;
 import org.eclipse.jgit.errors.MissingObjectException;
 import org.eclipse.jgit.lib.FileMode;
+import org.eclipse.jgit.lib.ObjectReader;
 import org.eclipse.jgit.treewalk.TreeWalk;
 import org.eclipse.jgit.treewalk.WorkingTreeIterator;
 
@@ -71,7 +73,7 @@ import org.eclipse.jgit.treewalk.WorkingTreeIterator;
  * <p>
  * If no difference is found then we have to compare index and working-tree as
  * the last step. By making use of
- * {@link WorkingTreeIterator#isModified(org.eclipse.jgit.dircache.DirCacheEntry, boolean)}
+ * {@link WorkingTreeIterator#isModified(org.eclipse.jgit.dircache.DirCacheEntry, boolean, ObjectReader)}
  * we can avoid the computation of the content id if the file is not dirty.
  * <p>
  * Instances of this filter should not be used for multiple {@link TreeWalk}s.
@@ -84,11 +86,11 @@ public class IndexDiffFilter extends TreeFilter {
 
 	private final boolean honorIgnores;
 
-	private final Set<String> ignoredPaths = new HashSet<String>();
+	private final Set<String> ignoredPaths = new HashSet<>();
 
-	private final LinkedList<String> untrackedParentFolders = new LinkedList<String>();
+	private final LinkedList<String> untrackedParentFolders = new LinkedList<>();
 
-	private final LinkedList<String> untrackedFolders = new LinkedList<String>();
+	private final LinkedList<String> untrackedFolders = new LinkedList<>();
 
 	/**
 	 * Creates a new instance of this filter. Do not use an instance of this
@@ -131,7 +133,20 @@ public class IndexDiffFilter extends TreeFilter {
 			IncorrectObjectTypeException, IOException {
 		final int cnt = tw.getTreeCount();
 		final int wm = tw.getRawMode(workingTree);
+		WorkingTreeIterator wi = workingTree(tw);
 		String path = tw.getPathString();
+
+		DirCacheIterator di = tw.getTree(dirCache, DirCacheIterator.class);
+		if (di != null) {
+			DirCacheEntry dce = di.getDirCacheEntry();
+			if (dce != null) {
+				if (dce.isAssumeValid())
+					return false;
+				// Never filter index entries with a stage different from 0
+				if (dce.getStage() != 0)
+					return true;
+			}
+		}
 
 		if (!tw.isPostOrderTraversal()) {
 			// detect untracked Folders
@@ -139,7 +154,8 @@ public class IndexDiffFilter extends TreeFilter {
 			// contain only untracked files and add it to
 			// untrackedParentFolders. If we later find tracked files we will
 			// remove it from this list
-			if (FileMode.TREE.equals(wm)) {
+			if (FileMode.TREE.equals(wm)
+					&& !(honorIgnores && wi.isEntryIgnored())) {
 				// Clean untrackedParentFolders. This potentially moves entries
 				// from untrackedParentFolders to untrackedFolders
 				copyUntrackedFolders(path);
@@ -153,7 +169,7 @@ public class IndexDiffFilter extends TreeFilter {
 			// it.
 			for (int i = 0; i < cnt; i++) {
 				int rmode = tw.getRawMode(i);
-				if (i != workingTree && rmode != 0
+				if (i != workingTree && rmode != FileMode.TYPE_MISSING
 						&& FileMode.TREE.equals(rmode)) {
 					untrackedParentFolders.clear();
 					break;
@@ -170,21 +186,20 @@ public class IndexDiffFilter extends TreeFilter {
 		// we can avoid returning a result here, but only if its not in any
 		// other tree.
 		final int dm = tw.getRawMode(dirCache);
-		WorkingTreeIterator wi = workingTree(tw);
-		if (dm == 0) {
+		if (dm == FileMode.TYPE_MISSING) {
 			if (honorIgnores && wi.isEntryIgnored()) {
 				ignoredPaths.add(wi.getEntryPathString());
 				int i = 0;
 				for (; i < cnt; i++) {
 					if (i == dirCache || i == workingTree)
 						continue;
-					if (tw.getRawMode(i) != 0)
+					if (tw.getRawMode(i) != FileMode.TYPE_MISSING)
 						break;
 				}
 
 				// If i is cnt then the path does not appear in any other tree,
 				// and this working tree entry can be safely ignored.
-				return i == cnt ? false : true;
+				return i != cnt;
 			} else {
 				// In working tree and not ignored, and not in DirCache.
 				return true;
@@ -209,8 +224,8 @@ public class IndexDiffFilter extends TreeFilter {
 		// Only one chance left to detect a diff: between index and working
 		// tree. Make use of the WorkingTreeIterator#isModified() method to
 		// avoid computing SHA1 on filesystem content if not really needed.
-		DirCacheIterator di = tw.getTree(dirCache, DirCacheIterator.class);
-		return wi.isModified(di.getDirCacheEntry(), true);
+		return wi.isModified(di == null ? null : di.getDirCacheEntry(), true,
+				tw.getObjectReader());
 	}
 
 	/**
@@ -226,7 +241,7 @@ public class IndexDiffFilter extends TreeFilter {
 		String pathToBeSaved = null;
 		while (!untrackedParentFolders.isEmpty()
 				&& !currentPath.startsWith(untrackedParentFolders.getFirst()
-						+ "/"))
+						+ "/")) //$NON-NLS-1$
 			pathToBeSaved = untrackedParentFolders.removeFirst();
 		if (pathToBeSaved != null) {
 			while (!untrackedFolders.isEmpty()
@@ -254,7 +269,7 @@ public class IndexDiffFilter extends TreeFilter {
 
 	@Override
 	public String toString() {
-		return "INDEX_DIFF_FILTER";
+		return "INDEX_DIFF_FILTER"; //$NON-NLS-1$
 	}
 
 	/**
@@ -277,7 +292,7 @@ public class IndexDiffFilter extends TreeFilter {
 	 *         empty list will be returned.
 	 */
 	public List<String> getUntrackedFolders() {
-		LinkedList<String> ret = new LinkedList<String>(untrackedFolders);
+		LinkedList<String> ret = new LinkedList<>(untrackedFolders);
 		if (!untrackedParentFolders.isEmpty()) {
 			String toBeAdded = untrackedParentFolders.getLast();
 			while (!ret.isEmpty() && ret.getLast().startsWith(toBeAdded))

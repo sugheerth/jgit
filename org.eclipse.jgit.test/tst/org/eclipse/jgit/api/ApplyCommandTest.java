@@ -44,6 +44,7 @@ package org.eclipse.jgit.api;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.io.ByteArrayOutputStream;
@@ -53,9 +54,8 @@ import java.io.InputStream;
 
 import org.eclipse.jgit.api.errors.PatchApplyException;
 import org.eclipse.jgit.api.errors.PatchFormatException;
-import org.eclipse.jgit.diff.DiffFormatterReflowTest;
 import org.eclipse.jgit.diff.RawText;
-import org.eclipse.jgit.lib.RepositoryTestCase;
+import org.eclipse.jgit.junit.RepositoryTestCase;
 import org.junit.Test;
 
 public class ApplyCommandTest extends RepositoryTestCase {
@@ -70,25 +70,24 @@ public class ApplyCommandTest extends RepositoryTestCase {
 
 	private ApplyResult init(final String name, final boolean preExists,
 			final boolean postExists) throws Exception {
-		Git git = new Git(db);
+		try (Git git = new Git(db)) {
+			if (preExists) {
+				a = new RawText(readFile(name + "_PreImage"));
+				write(new File(db.getDirectory().getParent(), name),
+						a.getString(0, a.size(), false));
 
-		if (preExists) {
-			a = new RawText(readFile(name + "_PreImage"));
-			write(new File(db.getDirectory().getParent(), name),
-					a.getString(0, a.size(), false));
+				git.add().addFilepattern(name).call();
+				git.commit().setMessage("PreImage").call();
+			}
 
-			git.add().addFilepattern(name).call();
-			git.commit().setMessage("PreImage").call();
+			if (postExists) {
+				b = new RawText(readFile(name + "_PostImage"));
+			}
+
+			return git
+					.apply()
+					.setPatch(getTestResource(name + ".patch")).call();
 		}
-
-		if (postExists)
-			b = new RawText(readFile(name + "_PostImage"));
-
-		return git
-				.apply()
-				.setPatch(
-						DiffFormatterReflowTest.class.getResourceAsStream(name
-								+ ".patch")).call();
 	}
 
 	@Test
@@ -149,6 +148,43 @@ public class ApplyCommandTest extends RepositoryTestCase {
 	}
 
 	@Test
+	public void testModifyW() throws Exception {
+		ApplyResult result = init("W");
+		assertEquals(1, result.getUpdatedFiles().size());
+		assertEquals(new File(db.getWorkTree(), "W"),
+				result.getUpdatedFiles().get(0));
+		checkFile(new File(db.getWorkTree(), "W"),
+				b.getString(0, b.size(), false));
+	}
+
+	@Test
+	public void testAddM1() throws Exception {
+		ApplyResult result = init("M1", false, true);
+		assertEquals(1, result.getUpdatedFiles().size());
+		assertTrue(result.getUpdatedFiles().get(0).canExecute());
+		checkFile(new File(db.getWorkTree(), "M1"),
+				b.getString(0, b.size(), false));
+	}
+
+	@Test
+	public void testModifyM2() throws Exception {
+		ApplyResult result = init("M2", true, true);
+		assertEquals(1, result.getUpdatedFiles().size());
+		assertTrue(result.getUpdatedFiles().get(0).canExecute());
+		checkFile(new File(db.getWorkTree(), "M2"),
+				b.getString(0, b.size(), false));
+	}
+
+	@Test
+	public void testModifyM3() throws Exception {
+		ApplyResult result = init("M3", true, true);
+		assertEquals(1, result.getUpdatedFiles().size());
+		assertFalse(result.getUpdatedFiles().get(0).canExecute());
+		checkFile(new File(db.getWorkTree(), "M3"),
+				b.getString(0, b.size(), false));
+	}
+
+	@Test
 	public void testModifyX() throws Exception {
 		ApplyResult result = init("X");
 		assertEquals(1, result.getUpdatedFiles().size());
@@ -178,9 +214,67 @@ public class ApplyCommandTest extends RepositoryTestCase {
 				b.getString(0, b.size(), false));
 	}
 
-	private byte[] readFile(final String patchFile) throws IOException {
-		final InputStream in = DiffFormatterReflowTest.class
-				.getResourceAsStream(patchFile);
+	@Test
+	public void testModifyNL1() throws Exception {
+		ApplyResult result = init("NL1");
+		assertEquals(1, result.getUpdatedFiles().size());
+		assertEquals(new File(db.getWorkTree(), "NL1"), result
+				.getUpdatedFiles().get(0));
+		checkFile(new File(db.getWorkTree(), "NL1"),
+				b.getString(0, b.size(), false));
+	}
+
+	@Test
+	public void testNonASCII() throws Exception {
+		ApplyResult result = init("NonASCII");
+		assertEquals(1, result.getUpdatedFiles().size());
+		assertEquals(new File(db.getWorkTree(), "NonASCII"),
+				result.getUpdatedFiles().get(0));
+		checkFile(new File(db.getWorkTree(), "NonASCII"),
+				b.getString(0, b.size(), false));
+	}
+
+	@Test
+	public void testNonASCII2() throws Exception {
+		ApplyResult result = init("NonASCII2");
+		assertEquals(1, result.getUpdatedFiles().size());
+		assertEquals(new File(db.getWorkTree(), "NonASCII2"),
+				result.getUpdatedFiles().get(0));
+		checkFile(new File(db.getWorkTree(), "NonASCII2"),
+				b.getString(0, b.size(), false));
+	}
+
+	@Test
+	public void testNonASCIIAdd() throws Exception {
+		ApplyResult result = init("NonASCIIAdd");
+		assertEquals(1, result.getUpdatedFiles().size());
+		assertEquals(new File(db.getWorkTree(), "NonASCIIAdd"),
+				result.getUpdatedFiles().get(0));
+		checkFile(new File(db.getWorkTree(), "NonASCIIAdd"),
+				b.getString(0, b.size(), false));
+	}
+
+	@Test
+	public void testNonASCIIAdd2() throws Exception {
+		ApplyResult result = init("NonASCIIAdd2", false, true);
+		assertEquals(1, result.getUpdatedFiles().size());
+		assertEquals(new File(db.getWorkTree(), "NonASCIIAdd2"),
+				result.getUpdatedFiles().get(0));
+		checkFile(new File(db.getWorkTree(), "NonASCIIAdd2"),
+				b.getString(0, b.size(), false));
+	}
+
+	@Test
+	public void testNonASCIIDel() throws Exception {
+		ApplyResult result = init("NonASCIIDel", true, false);
+		assertEquals(1, result.getUpdatedFiles().size());
+		assertEquals(new File(db.getWorkTree(), "NonASCIIDel"),
+				result.getUpdatedFiles().get(0));
+		assertFalse(new File(db.getWorkTree(), "NonASCIIDel").exists());
+	}
+
+	private static byte[] readFile(final String patchFile) throws IOException {
+		final InputStream in = getTestResource(patchFile);
 		if (in == null) {
 			fail("No " + patchFile + " test vector");
 			return null; // Never happens
@@ -195,5 +289,10 @@ public class ApplyCommandTest extends RepositoryTestCase {
 		} finally {
 			in.close();
 		}
+	}
+
+	private static InputStream getTestResource(final String patchFile) {
+		return ApplyCommandTest.class.getClassLoader()
+				.getResourceAsStream("org/eclipse/jgit/diff/" + patchFile);
 	}
 }

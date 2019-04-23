@@ -45,6 +45,7 @@
 
 package org.eclipse.jgit.transport;
 
+import java.io.OutputStream;
 import java.util.Collection;
 import java.util.Set;
 
@@ -63,9 +64,17 @@ import org.eclipse.jgit.lib.Ref;
  */
 abstract class BaseFetchConnection extends BaseConnection implements
 		FetchConnection {
+	@Override
 	public final void fetch(final ProgressMonitor monitor,
 			final Collection<Ref> want, final Set<ObjectId> have)
 			throws TransportException {
+		fetch(monitor, want, have, null);
+	}
+
+	@Override
+	public final void fetch(final ProgressMonitor monitor,
+			final Collection<Ref> want, final Set<ObjectId> have,
+			OutputStream out) throws TransportException {
 		markStartedOperation();
 		doFetch(monitor, want, have);
 	}
@@ -74,6 +83,7 @@ abstract class BaseFetchConnection extends BaseConnection implements
 	 * Default implementation of {@link FetchConnection#didFetchIncludeTags()} -
 	 * returning false.
 	 */
+	@Override
 	public boolean didFetchIncludeTags() {
 		return false;
 	}

@@ -52,7 +52,7 @@ import java.io.File;
 
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.dircache.DirCacheIterator;
-import org.eclipse.jgit.lib.RepositoryTestCase;
+import org.eclipse.jgit.junit.RepositoryTestCase;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.treewalk.FileTreeIterator;
 import org.eclipse.jgit.treewalk.TreeWalk;
@@ -89,6 +89,7 @@ public class IndexDiffFilterTest extends RepositoryTestCase {
 
 	private Git git;
 
+	@Override
 	@Before
 	public void setUp() throws Exception {
 		super.setUp();
@@ -132,6 +133,31 @@ public class IndexDiffFilterTest extends RepositoryTestCase {
 		RevCommit commit = writeFileAndCommit();
 		TreeWalk treeWalk = createTreeWalk(commit);
 		assertFalse(treeWalk.next());
+	}
+
+	@Test
+	public void testConflicts() throws Exception {
+		RevCommit initial = git.commit().setMessage("initial").call();
+		writeTrashFile(FILE, "master");
+		git.add().addFilepattern(FILE).call();
+		RevCommit master = git.commit().setMessage("master").call();
+		git.checkout().setName("refs/heads/side")
+				.setCreateBranch(true).setStartPoint(initial).call();
+		writeTrashFile(FILE, "side");
+		git.add().addFilepattern(FILE).call();
+		RevCommit side = git.commit().setMessage("side").call();
+		assertFalse(git.merge().include("master", master).call()
+				.getMergeStatus()
+				.isSuccessful());
+		assertEquals(read(FILE),
+				"<<<<<<< HEAD\nside\n=======\nmaster\n>>>>>>> master\n");
+		writeTrashFile(FILE, "master");
+
+		TreeWalk treeWalk = createTreeWalk(side);
+		int count = 0;
+		while (treeWalk.next())
+			count++;
+		assertEquals(2, count);
 	}
 
 	@Test
@@ -619,7 +645,7 @@ public class IndexDiffFilterTest extends RepositoryTestCase {
 		return treeWalk;
 	}
 
-	private void assertPaths(TreeWalk treeWalk, String... paths)
+	private static void assertPaths(TreeWalk treeWalk, String... paths)
 			throws Exception {
 		for (int i = 0; i < paths.length; i++) {
 			assertTrue(treeWalk.next());
@@ -628,7 +654,7 @@ public class IndexDiffFilterTest extends RepositoryTestCase {
 		assertFalse(treeWalk.next());
 	}
 
-	private void assertPath(String path, String... paths) {
+	private static void assertPath(String path, String... paths) {
 		for (String p : paths)
 			if (p.equals(path))
 				return;

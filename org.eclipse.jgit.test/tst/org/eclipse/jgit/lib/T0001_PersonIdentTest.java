@@ -44,6 +44,7 @@
 package org.eclipse.jgit.lib;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 import java.util.Date;
 import java.util.TimeZone;
@@ -73,4 +74,69 @@ public class T0001_PersonIdentTest {
 		assertEquals("A U Thor <author@example.com> 1142878501 +0230",
 				p.toExternalString());
 	}
+
+	@SuppressWarnings("unused")
+	@Test(expected = IllegalArgumentException.class)
+	public void nullForNameShouldThrowIllegalArgumentException() {
+		new PersonIdent(null, "author@example.com");
+	}
+
+	@SuppressWarnings("unused")
+	@Test(expected = IllegalArgumentException.class)
+	public void nullForEmailShouldThrowIllegalArgumentException() {
+		new PersonIdent("A U Thor", null);
+	}
+
+	@Test
+	public void testToExternalStringTrimsNameAndEmail() throws Exception {
+		PersonIdent personIdent = new PersonIdent(" \u0010A U Thor  ",
+				"  author@example.com \u0009");
+
+		assertEquals(" \u0010A U Thor  ", personIdent.getName());
+		assertEquals("  author@example.com \u0009", personIdent.getEmailAddress());
+
+		String externalString = personIdent.toExternalString();
+		assertTrue(externalString.startsWith("A U Thor <author@example.com>"));
+	}
+
+	@Test
+	public void testToExternalStringTrimsAllWhitespace() {
+		String ws = "  \u0001 \n ";
+		PersonIdent personIdent = new PersonIdent(ws, ws);
+		assertEquals(ws, personIdent.getName());
+		assertEquals(ws, personIdent.getEmailAddress());
+
+		String externalString = personIdent.toExternalString();
+		assertTrue(externalString.startsWith(" <>"));
+	}
+
+	@Test
+	public void testToExternalStringTrimsOtherBadCharacters() {
+		String name = " Foo\r\n<Bar> ";
+		String email = " Baz>\n\u1234<Quux ";
+		PersonIdent personIdent = new PersonIdent(name, email);
+		assertEquals(name, personIdent.getName());
+		assertEquals(email, personIdent.getEmailAddress());
+
+		String externalString = personIdent.toExternalString();
+		assertTrue(externalString.startsWith("Foo\rBar <Baz\u1234Quux>"));
+	}
+
+	@Test
+	public void testEmptyNameAndEmail() {
+		PersonIdent personIdent = new PersonIdent("", "");
+		assertEquals("", personIdent.getName());
+		assertEquals("", personIdent.getEmailAddress());
+
+		String externalString = personIdent.toExternalString();
+		assertTrue(externalString.startsWith(" <>"));
+	}
+
+	@Test
+	public void testAppendSanitized() {
+		StringBuilder r = new StringBuilder();
+		PersonIdent.appendSanitized(r, " Baz>\n\u1234<Quux ");
+		assertEquals("Baz\u1234Quux", r.toString());
+	}
 }
+

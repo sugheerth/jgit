@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2008, Shawn O. Pearce <spearce@spearce.org>
+ * Copyright (C) 2008, 2013 Shawn O. Pearce <spearce@spearce.org>
  * and other copyright owners as documented in the project's IP log.
  *
  * This program and the accompanying materials are made available
@@ -43,8 +43,8 @@
 
 package org.eclipse.jgit.transport;
 
-import java.text.MessageFormat;
 import java.io.Serializable;
+import java.text.MessageFormat;
 
 import org.eclipse.jgit.internal.JGitText;
 import org.eclipse.jgit.lib.Constants;
@@ -59,11 +59,11 @@ import org.eclipse.jgit.lib.Ref;
 public class RefSpec implements Serializable {
 	private static final long serialVersionUID = 1L;
 
-        /**
+	/**
 	 * Suffix for wildcard ref spec component, that indicate matching all refs
 	 * with specified prefix.
 	 */
-	public static final String WILDCARD_SUFFIX = "/*";
+	public static final String WILDCARD_SUFFIX = "/*"; //$NON-NLS-1$
 
 	/**
 	 * Check whether provided string is a wildcard ref spec component.
@@ -73,7 +73,7 @@ public class RefSpec implements Serializable {
 	 * @return true if provided string is a wildcard ref spec component.
 	 */
 	public static boolean isWildcard(final String s) {
-		return s != null && s.endsWith(WILDCARD_SUFFIX);
+		return s != null && s.contains("*"); //$NON-NLS-1$
 	}
 
 	/** Does this specification ask for forced updated (rewind/reset)? */
@@ -81,6 +81,30 @@ public class RefSpec implements Serializable {
 
 	/** Is this specification actually a wildcard match? */
 	private boolean wildcard;
+
+	/**
+	 * How strict to be about wildcards.
+	 *
+	 * @since 4.5
+	 */
+	public enum WildcardMode {
+		/**
+		 * Reject refspecs with an asterisk on the source side and not the
+		 * destination side or vice versa. This is the mode used by FetchCommand
+		 * and PushCommand to create a one-to-one mapping between source and
+		 * destination refs.
+		 */
+		REQUIRE_MATCH,
+		/**
+		 * Allow refspecs with an asterisk on only one side. This can create a
+		 * many-to-one mapping between source and destination refs, so
+		 * expandFromSource and expandFromDestination are not usable in this
+		 * mode.
+		 */
+		ALLOW_MISMATCH
+	}
+	/** Whether a wildcard is allowed on one side but not the other. */
+	private WildcardMode allowMismatchedWildcards;
 
 	/** Name of the ref(s) we would copy from. */
 	private String srcName;
@@ -99,6 +123,7 @@ public class RefSpec implements Serializable {
 		wildcard = false;
 		srcName = Constants.HEAD;
 		dstName = null;
+		allowMismatchedWildcards = WildcardMode.REQUIRE_MATCH;
 	}
 
 	/**
@@ -106,13 +131,90 @@ public class RefSpec implements Serializable {
 	 * <p>
 	 * Specifications are typically one of the following forms:
 	 * <ul>
-	 * <li><code>refs/head/master</code></li>
-	 * <li><code>refs/head/master:refs/remotes/origin/master</code></li>
-	 * <li><code>refs/head/*:refs/remotes/origin/*</code></li>
-	 * <li><code>+refs/head/master</code></li>
-	 * <li><code>+refs/head/master:refs/remotes/origin/master</code></li>
-	 * <li><code>+refs/head/*:refs/remotes/origin/*</code></li>
-	 * <li><code>:refs/head/master</code></li>
+	 * <li><code>refs/heads/master</code></li>
+	 * <li><code>refs/heads/master:refs/remotes/origin/master</code></li>
+	 * <li><code>refs/heads/*:refs/remotes/origin/*</code></li>
+	 * <li><code>+refs/heads/master</code></li>
+	 * <li><code>+refs/heads/master:refs/remotes/origin/master</code></li>
+	 * <li><code>+refs/heads/*:refs/remotes/origin/*</code></li>
+	 * <li><code>+refs/pull/&#42;/head:refs/remotes/origin/pr/*</code></li>
+	 * <li><code>:refs/heads/master</code></li>
+	 * </ul>
+	 *
+	 * If the wildcard mode allows mismatches, then these ref specs are also
+	 * valid:
+	 * <ul>
+	 * <li><code>refs/heads/*</code></li>
+	 * <li><code>refs/heads/*:refs/heads/master</code></li>
+	 * </ul>
+	 *
+	 * @param spec
+	 *            string describing the specification.
+	 * @param mode
+	 *            whether to allow a wildcard on one side without a wildcard on
+	 *            the other.
+	 * @throws IllegalArgumentException
+	 *             the specification is invalid.
+	 * @since 4.5
+	 */
+	public RefSpec(String spec, WildcardMode mode) {
+		this.allowMismatchedWildcards = mode;
+		String s = spec;
+		if (s.startsWith("+")) { //$NON-NLS-1$
+			force = true;
+			s = s.substring(1);
+		}
+
+		final int c = s.lastIndexOf(':');
+		if (c == 0) {
+			s = s.substring(1);
+			if (isWildcard(s)) {
+				wildcard = true;
+				if (mode == WildcardMode.REQUIRE_MATCH) {
+					throw new IllegalArgumentException(MessageFormat
+							.format(JGitText.get().invalidWildcards, spec));
+				}
+			}
+			dstName = checkValid(s);
+		} else if (c > 0) {
+			String src = s.substring(0, c);
+			String dst = s.substring(c + 1);
+			if (isWildcard(src) && isWildcard(dst)) {
+				// Both contain wildcard
+				wildcard = true;
+			} else if (isWildcard(src) || isWildcard(dst)) {
+				wildcard = true;
+				if (mode == WildcardMode.REQUIRE_MATCH)
+					throw new IllegalArgumentException(MessageFormat
+							.format(JGitText.get().invalidWildcards, spec));
+			}
+			srcName = checkValid(src);
+			dstName = checkValid(dst);
+		} else {
+			if (isWildcard(s)) {
+				if (mode == WildcardMode.REQUIRE_MATCH) {
+					throw new IllegalArgumentException(MessageFormat
+							.format(JGitText.get().invalidWildcards, spec));
+				}
+				wildcard = true;
+			}
+			srcName = checkValid(s);
+		}
+	}
+
+	/**
+	 * Parse a ref specification for use during transport operations.
+	 * <p>
+	 * Specifications are typically one of the following forms:
+	 * <ul>
+	 * <li><code>refs/heads/master</code></li>
+	 * <li><code>refs/heads/master:refs/remotes/origin/master</code></li>
+	 * <li><code>refs/heads/*:refs/remotes/origin/*</code></li>
+	 * <li><code>+refs/heads/master</code></li>
+	 * <li><code>+refs/heads/master:refs/remotes/origin/master</code></li>
+	 * <li><code>+refs/heads/*:refs/remotes/origin/*</code></li>
+	 * <li><code>+refs/pull/&#42;/head:refs/remotes/origin/pr/*</code></li>
+	 * <li><code>:refs/heads/master</code></li>
 	 * </ul>
 	 *
 	 * @param spec
@@ -121,30 +223,7 @@ public class RefSpec implements Serializable {
 	 *             the specification is invalid.
 	 */
 	public RefSpec(final String spec) {
-		String s = spec;
-		if (s.startsWith("+")) {
-			force = true;
-			s = s.substring(1);
-		}
-
-		final int c = s.lastIndexOf(':');
-		if (c == 0) {
-			s = s.substring(1);
-			if (isWildcard(s))
-				throw new IllegalArgumentException(MessageFormat.format(JGitText.get().invalidWildcards, spec));
-			dstName = s;
-		} else if (c > 0) {
-			srcName = s.substring(0, c);
-			dstName = s.substring(c + 1);
-			if (isWildcard(srcName) && isWildcard(dstName))
-				wildcard = true;
-			else if (isWildcard(srcName) || isWildcard(dstName))
-				throw new IllegalArgumentException(MessageFormat.format(JGitText.get().invalidWildcards, spec));
-		} else {
-			if (isWildcard(s))
-				throw new IllegalArgumentException(MessageFormat.format(JGitText.get().invalidWildcards, spec));
-			srcName = s;
-		}
+		this(spec, WildcardMode.REQUIRE_MATCH);
 	}
 
 	private RefSpec(final RefSpec p) {
@@ -152,6 +231,7 @@ public class RefSpec implements Serializable {
 		wildcard = p.isWildcard();
 		srcName = p.getSource();
 		dstName = p.getDestination();
+		allowMismatchedWildcards = p.allowMismatchedWildcards;
 	}
 
 	/**
@@ -215,7 +295,7 @@ public class RefSpec implements Serializable {
 	 */
 	public RefSpec setSource(final String source) {
 		final RefSpec r = new RefSpec(this);
-		r.srcName = source;
+		r.srcName = checkValid(source);
 		if (isWildcard(r.srcName) && r.dstName == null)
 			throw new IllegalStateException(JGitText.get().destinationIsNotAWildcard);
 		if (isWildcard(r.srcName) != isWildcard(r.dstName))
@@ -254,7 +334,7 @@ public class RefSpec implements Serializable {
 	 */
 	public RefSpec setDestination(final String destination) {
 		final RefSpec r = new RefSpec(this);
-		r.dstName = destination;
+		r.dstName = checkValid(destination);
 		if (isWildcard(r.dstName) && r.srcName == null)
 			throw new IllegalStateException(JGitText.get().sourceIsNotAWildcard);
 		if (isWildcard(r.srcName) != isWildcard(r.dstName))
@@ -341,8 +421,15 @@ public class RefSpec implements Serializable {
 	 * @return a new specification expanded from provided ref name. Result
 	 *         specification is wildcard if and only if provided ref name is
 	 *         wildcard.
+	 * @throws IllegalStateException
+	 *             when the RefSpec was constructed with wildcard mode that
+	 *             doesn't require matching wildcards.
 	 */
 	public RefSpec expandFromSource(final String r) {
+		if (allowMismatchedWildcards != WildcardMode.REQUIRE_MATCH) {
+			throw new IllegalStateException(
+					JGitText.get().invalidExpandWildcard);
+		}
 		return isWildcard() ? new RefSpec(this).expandFromSourceImp(r) : this;
 	}
 
@@ -350,8 +437,7 @@ public class RefSpec implements Serializable {
 		final String psrc = srcName, pdst = dstName;
 		wildcard = false;
 		srcName = name;
-		dstName = pdst.substring(0, pdst.length() - 1)
-				+ name.substring(psrc.length() - 1);
+		dstName = expandWildcard(name, psrc, pdst);
 		return this;
 	}
 
@@ -367,6 +453,9 @@ public class RefSpec implements Serializable {
 	 * @return a new specification expanded from provided ref name. Result
 	 *         specification is wildcard if and only if provided ref name is
 	 *         wildcard.
+	 * @throws IllegalStateException
+	 *             when the RefSpec was constructed with wildcard mode that
+	 *             doesn't require matching wildcards.
 	 */
 	public RefSpec expandFromSource(final Ref r) {
 		return expandFromSource(r.getName());
@@ -384,16 +473,22 @@ public class RefSpec implements Serializable {
 	 * @return a new specification expanded from provided ref name. Result
 	 *         specification is wildcard if and only if provided ref name is
 	 *         wildcard.
+	 * @throws IllegalStateException
+	 *             when the RefSpec was constructed with wildcard mode that
+	 *             doesn't require matching wildcards.
 	 */
 	public RefSpec expandFromDestination(final String r) {
+		if (allowMismatchedWildcards != WildcardMode.REQUIRE_MATCH) {
+			throw new IllegalStateException(
+					JGitText.get().invalidExpandWildcard);
+		}
 		return isWildcard() ? new RefSpec(this).expandFromDstImp(r) : this;
 	}
 
 	private RefSpec expandFromDstImp(final String name) {
 		final String psrc = srcName, pdst = dstName;
 		wildcard = false;
-		srcName = psrc.substring(0, psrc.length() - 1)
-				+ name.substring(pdst.length() - 1);
+		srcName = expandWildcard(name, pdst, psrc);
 		dstName = name;
 		return this;
 	}
@@ -409,19 +504,59 @@ public class RefSpec implements Serializable {
 	 * @return a new specification expanded from provided ref name. Result
 	 *         specification is wildcard if and only if provided ref name is
 	 *         wildcard.
+	 * @throws IllegalStateException
+	 *             when the RefSpec was constructed with wildcard mode that
+	 *             doesn't require matching wildcards.
 	 */
 	public RefSpec expandFromDestination(final Ref r) {
 		return expandFromDestination(r.getName());
 	}
 
-	private boolean match(final String refName, final String s) {
+	private boolean match(final String name, final String s) {
 		if (s == null)
 			return false;
-		if (isWildcard())
-			return refName.startsWith(s.substring(0, s.length() - 1));
-		return refName.equals(s);
+		if (isWildcard(s)) {
+			int wildcardIndex = s.indexOf('*');
+			String prefix = s.substring(0, wildcardIndex);
+			String suffix = s.substring(wildcardIndex + 1);
+			return name.length() > prefix.length() + suffix.length()
+					&& name.startsWith(prefix) && name.endsWith(suffix);
+		}
+		return name.equals(s);
 	}
 
+	private static String expandWildcard(String name, String patternA,
+			String patternB) {
+		int a = patternA.indexOf('*');
+		int trailingA = patternA.length() - (a + 1);
+		int b = patternB.indexOf('*');
+		String match = name.substring(a, name.length() - trailingA);
+		return patternB.substring(0, b) + match + patternB.substring(b + 1);
+	}
+
+	private static String checkValid(String spec) {
+		if (spec != null && !isValid(spec))
+			throw new IllegalArgumentException(MessageFormat.format(
+					JGitText.get().invalidRefSpec, spec));
+		return spec;
+	}
+
+	private static boolean isValid(final String s) {
+		if (s.startsWith("/")) //$NON-NLS-1$
+			return false;
+		if (s.contains("//")) //$NON-NLS-1$
+			return false;
+		if (s.endsWith("/")) //$NON-NLS-1$
+			return false;
+		int i = s.indexOf('*');
+		if (i != -1) {
+			if (s.indexOf('*', i + 1) > i)
+				return false;
+		}
+		return true;
+	}
+
+	@Override
 	public int hashCode() {
 		int hc = 0;
 		if (getSource() != null)
@@ -431,6 +566,7 @@ public class RefSpec implements Serializable {
 		return hc;
 	}
 
+	@Override
 	public boolean equals(final Object obj) {
 		if (!(obj instanceof RefSpec))
 			return false;
@@ -454,6 +590,7 @@ public class RefSpec implements Serializable {
 		return a.equals(b);
 	}
 
+	@Override
 	public String toString() {
 		final StringBuilder r = new StringBuilder();
 		if (isForceUpdate())

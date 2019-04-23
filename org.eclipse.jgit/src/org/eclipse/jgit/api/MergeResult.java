@@ -45,6 +45,7 @@ package org.eclipse.jgit.api;
 
 import java.text.MessageFormat;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.eclipse.jgit.internal.JGitText;
@@ -68,7 +69,7 @@ public class MergeResult {
 		FAST_FORWARD {
 			@Override
 			public String toString() {
-				return "Fast-forward";
+				return "Fast-forward"; //$NON-NLS-1$
 			}
 
 			@Override
@@ -82,7 +83,7 @@ public class MergeResult {
 		FAST_FORWARD_SQUASHED {
 			@Override
 			public String toString() {
-				return "Fast-forward-squashed";
+				return "Fast-forward-squashed"; //$NON-NLS-1$
 			}
 
 			@Override
@@ -94,7 +95,7 @@ public class MergeResult {
 		ALREADY_UP_TO_DATE {
 			@Override
 			public String toString() {
-				return "Already-up-to-date";
+				return "Already-up-to-date"; //$NON-NLS-1$
 			}
 
 			@Override
@@ -106,7 +107,7 @@ public class MergeResult {
 		FAILED {
 			@Override
 			public String toString() {
-				return "Failed";
+				return "Failed"; //$NON-NLS-1$
 			}
 
 			@Override
@@ -118,7 +119,7 @@ public class MergeResult {
 		MERGED {
 			@Override
 			public String toString() {
-				return "Merged";
+				return "Merged"; //$NON-NLS-1$
 			}
 
 			@Override
@@ -132,7 +133,21 @@ public class MergeResult {
 		MERGED_SQUASHED {
 			@Override
 			public String toString() {
-				return "Merged-squashed";
+				return "Merged-squashed"; //$NON-NLS-1$
+			}
+
+			@Override
+			public boolean isSuccessful() {
+				return true;
+			}
+		},
+		/**
+		 * @since 3.0
+		 */
+		MERGED_SQUASHED_NOT_COMMITTED {
+			@Override
+			public String toString() {
+				return "Merged-squashed-not-committed"; //$NON-NLS-1$
 			}
 
 			@Override
@@ -144,7 +159,7 @@ public class MergeResult {
 		CONFLICTING {
 			@Override
 			public String toString() {
-				return "Conflicting";
+				return "Conflicting"; //$NON-NLS-1$
 			}
 
 			@Override
@@ -152,11 +167,55 @@ public class MergeResult {
 				return false;
 			}
 		},
+		/**
+		 * @since 2.2
+		 */
+		ABORTED {
+			@Override
+			public String toString() {
+				return "Aborted"; //$NON-NLS-1$
+			}
+
+			@Override
+			public boolean isSuccessful() {
+				return false;
+			}
+		},
+		/**
+		 * @since 3.0
+		 **/
+		MERGED_NOT_COMMITTED {
+			@Override
+			public String toString() {
+				return "Merged-not-committed"; //$NON-NLS-1$
+			}
+
+			@Override
+			public boolean isSuccessful() {
+				return true;
+			}
+		},
 		/** */
 		NOT_SUPPORTED {
 			@Override
 			public String toString() {
-				return "Not-yet-supported";
+				return "Not-yet-supported"; //$NON-NLS-1$
+			}
+
+			@Override
+			public boolean isSuccessful() {
+				return false;
+			}
+		},
+		/**
+		 * Status representing a checkout conflict, meaning that nothing could
+		 * be merged, as the pre-scan for the trees already failed for certain
+		 * files (i.e. local modifications prevent checkout of files).
+		 */
+		CHECKOUT_CONFLICT {
+			@Override
+			public String toString() {
+				return "Checkout Conflict"; //$NON-NLS-1$
 			}
 
 			@Override
@@ -186,6 +245,8 @@ public class MergeResult {
 	private MergeStrategy mergeStrategy;
 
 	private Map<String, MergeFailureReason> failingPaths;
+
+	private List<String> checkoutConflicts;
 
 	/**
 	 * @param newHead
@@ -281,6 +342,18 @@ public class MergeResult {
 	}
 
 	/**
+	 * Creates a new result that represents a checkout conflict before the
+	 * operation even started for real.
+	 *
+	 * @param checkoutConflicts
+	 *            the conflicting files
+	 */
+	public MergeResult(List<String> checkoutConflicts) {
+		this.checkoutConflicts = checkoutConflicts;
+		this.mergeStatus = MergeStatus.CHECKOUT_CONFLICT;
+	}
+
+	/**
 	 * @return the object the head points at after the merge
 	 */
 	public ObjectId getNewHead() {
@@ -310,6 +383,7 @@ public class MergeResult {
 		return base;
 	}
 
+	@SuppressWarnings("nls")
 	@Override
 	public String toString() {
 		boolean first = true;
@@ -342,7 +416,7 @@ public class MergeResult {
 	 */
 	public void addConflict(String path, int[][] conflictingRanges) {
 		if (conflicts == null)
-			conflicts = new HashMap<String, int[][]>();
+			conflicts = new HashMap<>();
 		conflicts.put(path, conflictingRanges);
 	}
 
@@ -354,7 +428,7 @@ public class MergeResult {
 		if (!lowLevelResult.containsConflicts())
 			return;
 		if (conflicts == null)
-			conflicts = new HashMap<String, int[][]>();
+			conflicts = new HashMap<>();
 		int nrOfConflicts = 0;
 		// just counting
 		for (MergeChunk mergeChunk : lowLevelResult) {
@@ -392,32 +466,36 @@ public class MergeResult {
 	 * file to a two-dimensional int-array of line-numbers telling where in the
 	 * file conflict markers for which merged commit can be found.
 	 * <p>
-	 * If the returned value contains a mapping "path"->[x][y]=z then this means
+	 * If the returned value contains a mapping "path"-&gt;[x][y]=z then this
+	 * means
 	 * <ul>
 	 * <li>the file with path "path" contains conflicts</li>
-	 * <li>if y < "number of merged commits": for conflict number x in this file
-	 * the chunk which was copied from commit number y starts on line number z.
-	 * All numberings and line numbers start with 0.</li>
+	 * <li>if y &lt; "number of merged commits": for conflict number x in this
+	 * file the chunk which was copied from commit number y starts on line
+	 * number z. All numberings and line numbers start with 0.</li>
 	 * <li>if y == "number of merged commits": the first non-conflicting line
 	 * after conflict number x starts at line number z</li>
 	 * </ul>
 	 * <p>
 	 * Example code how to parse this data:
-	 * <pre> MergeResult m=...;
-	 * Map<String, int[][]> allConflicts = m.getConflicts();
+	 *
+	 * <pre>
+	 * MergeResult m=...;
+	 * Map&lt;String, int[][]&gt; allConflicts = m.getConflicts();
 	 * for (String path : allConflicts.keySet()) {
 	 * 	int[][] c = allConflicts.get(path);
 	 * 	System.out.println("Conflicts in file " + path);
-	 * 	for (int i = 0; i < c.length; ++i) {
+	 * 	for (int i = 0; i &lt; c.length; ++i) {
 	 * 		System.out.println("  Conflict #" + i);
-	 * 		for (int j = 0; j < (c[i].length) - 1; ++j) {
-	 * 			if (c[i][j] >= 0)
+	 * 		for (int j = 0; j &lt; (c[i].length) - 1; ++j) {
+	 * 			if (c[i][j] &gt;= 0)
 	 * 				System.out.println("    Chunk for "
 	 * 						+ m.getMergedCommits()[j] + " starts on line #"
 	 * 						+ c[i][j]);
 	 * 		}
 	 * 	}
-	 * }</pre>
+	 * }
+	 * </pre>
 	 *
 	 * @return the conflicts or <code>null</code> if no conflict occurred
 	 */
@@ -434,5 +512,15 @@ public class MergeResult {
 	 */
 	public Map<String, MergeFailureReason> getFailingPaths() {
 		return failingPaths;
+	}
+
+	/**
+	 * Returns a list of paths that cause a checkout conflict. These paths
+	 * prevent the operation from even starting.
+	 *
+	 * @return the list of files that caused the checkout conflict.
+	 */
+	public List<String> getCheckoutConflicts() {
+		return checkoutConflicts;
 	}
 }

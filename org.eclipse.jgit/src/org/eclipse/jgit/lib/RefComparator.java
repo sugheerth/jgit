@@ -60,31 +60,32 @@ public class RefComparator implements Comparator<Ref> {
 	/** Singleton instance of RefComparator */
 	public static final RefComparator INSTANCE = new RefComparator();
 
+	@Override
 	public int compare(final Ref o1, final Ref o2) {
 		return compareTo(o1, o2);
 	}
 
 	/**
 	 * Sorts the collection of refs, returning a new collection.
-	 * 
+	 *
 	 * @param refs
 	 *            collection to be sorted
 	 * @return sorted collection of refs
 	 */
 	public static Collection<Ref> sort(final Collection<Ref> refs) {
-		final List<Ref> r = new ArrayList<Ref>(refs);
+		final List<Ref> r = new ArrayList<>(refs);
 		Collections.sort(r, INSTANCE);
 		return r;
 	}
 
 	/**
 	 * Compare a reference to a name.
-	 * 
+	 *
 	 * @param o1
 	 *            the reference instance.
 	 * @param o2
 	 *            the name to compare to.
-	 * @return standard Comparator result of < 0, 0, > 0.
+	 * @return standard Comparator result of &lt; 0, 0, &gt; 0.
 	 */
 	public static int compareTo(Ref o1, String o2) {
 		return o1.getName().compareTo(o2);
@@ -92,12 +93,12 @@ public class RefComparator implements Comparator<Ref> {
 
 	/**
 	 * Compare two references by name.
-	 * 
+	 *
 	 * @param o1
 	 *            the reference instance.
 	 * @param o2
 	 *            the other reference instance.
-	 * @return standard Comparator result of < 0, 0, > 0.
+	 * @return standard Comparator result of &lt; 0, 0, &gt; 0.
 	 */
 	public static int compareTo(final Ref o1, final Ref o2) {
 		return o1.getName().compareTo(o2.getName());

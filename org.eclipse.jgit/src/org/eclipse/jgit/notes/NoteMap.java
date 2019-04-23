@@ -201,6 +201,7 @@ public class NoteMap implements Iterable<Note> {
 	 * @return an iterator that iterates over notes of this NoteMap. Non note
 	 *         entries are ignored by this iterator.
 	 */
+	@Override
 	public Iterator<Note> iterator() {
 		try {
 			return root.iterator(new MutableObjectId(), reader);
@@ -389,7 +390,7 @@ public class NoteMap implements Iterable<Note> {
 
 	private void load(ObjectId rootTree) throws MissingObjectException,
 			IncorrectObjectTypeException, CorruptObjectException, IOException {
-		AbbreviatedObjectId none = AbbreviatedObjectId.fromString("");
+		AbbreviatedObjectId none = AbbreviatedObjectId.fromString(""); //$NON-NLS-1$
 		root = NoteParser.parse(none, rootTree, reader);
 	}
 }

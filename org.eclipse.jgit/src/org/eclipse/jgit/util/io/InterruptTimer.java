@@ -90,7 +90,7 @@ public final class InterruptTimer {
 
 	/** Create a new timer with a default thread name. */
 	public InterruptTimer() {
-		this("JGit-InterruptTimer");
+		this("JGit-InterruptTimer"); //$NON-NLS-1$
 	}
 
 	/**
@@ -113,7 +113,7 @@ public final class InterruptTimer {
 	 *
 	 * @param timeout
 	 *            number of milliseconds before the interrupt should trigger.
-	 *            Must be > 0.
+	 *            Must be &gt; 0.
 	 */
 	public void begin(final int timeout) {
 		if (timeout <= 0)
@@ -176,6 +176,7 @@ public final class InterruptTimer {
 			callingThread = Thread.currentThread();
 		}
 
+		@Override
 		public synchronized void run() {
 			while (!terminated && callingThread.isAlive()) {
 				try {

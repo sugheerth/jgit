@@ -43,9 +43,11 @@
 package org.eclipse.jgit.api;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.StandardCopyOption;
 import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.List;
@@ -56,6 +58,7 @@ import org.eclipse.jgit.api.errors.PatchFormatException;
 import org.eclipse.jgit.diff.DiffEntry.ChangeType;
 import org.eclipse.jgit.diff.RawText;
 import org.eclipse.jgit.internal.JGitText;
+import org.eclipse.jgit.lib.FileMode;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.patch.FileHeader;
 import org.eclipse.jgit.patch.HunkHeader;
@@ -106,6 +109,7 @@ public class ApplyCommand extends GitCommand<ApplyResult> {
 	 * @throws PatchFormatException
 	 * @throws PatchApplyException
 	 */
+	@Override
 	public ApplyResult call() throws GitAPIException, PatchFormatException,
 			PatchApplyException {
 		checkCallable();
@@ -140,17 +144,25 @@ public class ApplyCommand extends GitCommand<ApplyResult> {
 				case RENAME:
 					f = getFile(fh.getOldPath(), false);
 					File dest = getFile(fh.getNewPath(), false);
-					if (!f.renameTo(dest))
+					try {
+						FileUtils.rename(f, dest,
+								StandardCopyOption.ATOMIC_MOVE);
+					} catch (IOException e) {
 						throw new PatchApplyException(MessageFormat.format(
-								JGitText.get().renameFileFailed, f, dest));
+								JGitText.get().renameFileFailed, f, dest), e);
+					}
 					break;
 				case COPY:
 					f = getFile(fh.getOldPath(), false);
 					byte[] bs = IO.readFully(f);
-					FileWriter fw = new FileWriter(getFile(fh.getNewPath(),
+					FileOutputStream fos = new FileOutputStream(getFile(
+							fh.getNewPath(),
 							true));
-					fw.write(new String(bs));
-					fw.close();
+					try {
+						fos.write(bs);
+					} finally {
+						fos.close();
+					}
 				}
 				r.addUpdatedFile(f);
 			}
@@ -186,16 +198,18 @@ public class ApplyCommand extends GitCommand<ApplyResult> {
 	private void apply(File f, FileHeader fh)
 			throws IOException, PatchApplyException {
 		RawText rt = new RawText(f);
-		List<String> oldLines = new ArrayList<String>(rt.size());
+		List<String> oldLines = new ArrayList<>(rt.size());
 		for (int i = 0; i < rt.size(); i++)
 			oldLines.add(rt.getString(i));
-		List<String> newLines = new ArrayList<String>(oldLines);
+		List<String> newLines = new ArrayList<>(oldLines);
 		for (HunkHeader hh : fh.getHunks()) {
-			StringBuilder hunk = new StringBuilder();
-			for (int j = hh.getStartOffset(); j < hh.getEndOffset(); j++)
-				hunk.append((char) hh.getBuffer()[j]);
-			RawText hrt = new RawText(hunk.toString().getBytes());
-			List<String> hunkLines = new ArrayList<String>(hrt.size());
+
+			byte[] b = new byte[hh.getEndOffset() - hh.getStartOffset()];
+			System.arraycopy(hh.getBuffer(), hh.getStartOffset(), b, 0,
+					b.length);
+			RawText hrt = new RawText(b);
+
+			List<String> hunkLines = new ArrayList<>(hrt.size());
 			for (int i = 0; i < hrt.size(); i++)
 				hunkLines.add(hrt.getString(i));
 			int pos = 0;
@@ -211,12 +225,16 @@ public class ApplyCommand extends GitCommand<ApplyResult> {
 					pos++;
 					break;
 				case '-':
-					if (!newLines.get(hh.getNewStartLine() - 1 + pos).equals(
-							hunkLine.substring(1))) {
-						throw new PatchApplyException(MessageFormat.format(
-								JGitText.get().patchApplyException, hh));
+					if (hh.getNewStartLine() == 0) {
+						newLines.clear();
+					} else {
+						if (!newLines.get(hh.getNewStartLine() - 1 + pos)
+								.equals(hunkLine.substring(1))) {
+							throw new PatchApplyException(MessageFormat.format(
+									JGitText.get().patchApplyException, hh));
+						}
+						newLines.remove(hh.getNewStartLine() - 1 + pos);
 					}
-					newLines.remove(hh.getNewStartLine() - 1 + pos);
 					break;
 				case '+':
 					newLines.add(hh.getNewStartLine() - 1 + pos,
@@ -227,27 +245,28 @@ public class ApplyCommand extends GitCommand<ApplyResult> {
 			}
 		}
 		if (!isNoNewlineAtEndOfFile(fh))
-			newLines.add("");
+			newLines.add(""); //$NON-NLS-1$
 		if (!rt.isMissingNewlineAtEnd())
-			oldLines.add("");
+			oldLines.add(""); //$NON-NLS-1$
 		if (!isChanged(oldLines, newLines))
 			return; // don't touch the file
 		StringBuilder sb = new StringBuilder();
-		final String eol = rt.size() == 0
-				|| (rt.size() == 1 && rt.isMissingNewlineAtEnd()) ? "\n" : rt
-				.getLineDelimiter();
 		for (String l : newLines) {
-			sb.append(l);
-			if (eol != null)
-				sb.append(eol);
+			// don't bother handling line endings - if it was windows, the \r is
+			// still there!
+			sb.append(l).append('\n');
 		}
-		sb.deleteCharAt(sb.length() - 1);
+		if (sb.length() > 0) {
+			sb.deleteCharAt(sb.length() - 1);
+		}
 		FileWriter fw = new FileWriter(f);
 		fw.write(sb.toString());
 		fw.close();
+
+		getRepository().getFS().setExecute(f, fh.getNewMode() == FileMode.EXECUTABLE_FILE);
 	}
 
-	private boolean isChanged(List<String> ol, List<String> nl) {
+	private static boolean isChanged(List<String> ol, List<String> nl) {
 		if (ol.size() != nl.size())
 			return true;
 		for (int i = 0; i < ol.size(); i++)

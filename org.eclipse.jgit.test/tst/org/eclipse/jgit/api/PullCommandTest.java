@@ -44,6 +44,7 @@ package org.eclipse.jgit.api;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
@@ -52,20 +53,22 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.util.concurrent.Callable;
 
 import org.eclipse.jgit.api.CreateBranchCommand.SetupUpstreamMode;
 import org.eclipse.jgit.api.MergeResult.MergeStatus;
 import org.eclipse.jgit.api.errors.NoHeadException;
+import org.eclipse.jgit.junit.JGitTestUtil;
+import org.eclipse.jgit.junit.RepositoryTestCase;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.RefUpdate;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.lib.RepositoryState;
-import org.eclipse.jgit.lib.RepositoryTestCase;
 import org.eclipse.jgit.lib.StoredConfig;
 import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.revwalk.RevSort;
 import org.eclipse.jgit.revwalk.RevWalk;
-import org.eclipse.jgit.storage.file.FileRepository;
 import org.eclipse.jgit.transport.RefSpec;
 import org.eclipse.jgit.transport.RemoteConfig;
 import org.eclipse.jgit.transport.URIish;
@@ -74,7 +77,7 @@ import org.junit.Test;
 
 public class PullCommandTest extends RepositoryTestCase {
 	/** Second Test repository */
-	protected FileRepository dbTarget;
+	protected Repository dbTarget;
 
 	private Git source;
 
@@ -138,10 +141,12 @@ public class PullCommandTest extends RepositoryTestCase {
 		ObjectId[] mergedCommits = mergeResult.getMergedCommits();
 		assertEquals(targetCommit.getId(), mergedCommits[0]);
 		assertEquals(sourceCommit.getId(), mergedCommits[1]);
-		RevCommit mergeCommit = new RevWalk(dbTarget).parseCommit(mergeResult
-				.getNewHead());
-		String message = "Merge branch 'master' of " + db.getWorkTree();
-		assertEquals(message, mergeCommit.getShortMessage());
+		try (RevWalk rw = new RevWalk(dbTarget)) {
+			RevCommit mergeCommit = rw.parseCommit(mergeResult.getNewHead());
+			String message = "Merge branch 'master' of "
+					+ db.getWorkTree().getAbsolutePath();
+			assertEquals(message, mergeCommit.getShortMessage());
+		}
 	}
 
 	@Test
@@ -178,6 +183,40 @@ public class PullCommandTest extends RepositoryTestCase {
 		assertFileContentsEqual(targetFile, result);
 		assertEquals(RepositoryState.MERGING, target.getRepository()
 				.getRepositoryState());
+	}
+
+	@Test
+	public void testPullWithUntrackedStash() throws Exception {
+		target.pull().call();
+
+		// change the source file
+		writeToFile(sourceFile, "Source change");
+		source.add().addFilepattern("SomeFile.txt").call();
+		source.commit().setMessage("Source change in remote").call();
+
+		// write untracked file
+		writeToFile(new File(dbTarget.getWorkTree(), "untracked.txt"),
+				"untracked");
+		RevCommit stash = target.stashCreate().setIndexMessage("message here")
+				.setIncludeUntracked(true).call();
+		assertNotNull(stash);
+		assertTrue(target.status().call().isClean());
+
+		// pull from source
+		assertTrue(target.pull().call().isSuccessful());
+		assertEquals("[SomeFile.txt, mode:100644, content:Source change]",
+				indexState(dbTarget, CONTENT));
+		assertFalse(JGitTestUtil.check(dbTarget, "untracked.txt"));
+		assertEquals("Source change",
+				JGitTestUtil.read(dbTarget, "SomeFile.txt"));
+
+		// apply the stash
+		target.stashApply().setStashRef(stash.getName()).call();
+		assertEquals("[SomeFile.txt, mode:100644, content:Source change]",
+				indexState(dbTarget, CONTENT));
+		assertEquals("untracked", JGitTestUtil.read(dbTarget, "untracked.txt"));
+		assertEquals("Source change",
+				JGitTestUtil.read(dbTarget, "SomeFile.txt"));
 	}
 
 	@Test
@@ -232,6 +271,287 @@ public class PullCommandTest extends RepositoryTestCase {
 		Git.wrap(empty).pull().call();
 	}
 
+	@Test
+	public void testPullMergeProgrammaticConfiguration() throws Exception {
+		// create another commit on another branch in source
+		source.checkout().setCreateBranch(true).setName("other").call();
+		sourceFile = new File(db.getWorkTree(), "file2.txt");
+		writeToFile(sourceFile, "content");
+		source.add().addFilepattern("file2.txt").call();
+		RevCommit sourceCommit = source.commit()
+				.setMessage("source commit on branch other").call();
+
+		File targetFile2 = new File(dbTarget.getWorkTree(), "OtherFile.txt");
+		writeToFile(targetFile2, "Unconflicting change");
+		target.add().addFilepattern("OtherFile.txt").call();
+		RevCommit targetCommit = target.commit()
+				.setMessage("Unconflicting change in local").call();
+
+		PullResult res = target.pull().setRemote("origin")
+				.setRemoteBranchName("other")
+				.setRebase(false).call();
+
+		MergeResult mergeResult = res.getMergeResult();
+		ObjectId[] mergedCommits = mergeResult.getMergedCommits();
+		assertEquals(targetCommit.getId(), mergedCommits[0]);
+		assertEquals(sourceCommit.getId(), mergedCommits[1]);
+		try (RevWalk rw = new RevWalk(dbTarget)) {
+			RevCommit mergeCommit = rw.parseCommit(mergeResult.getNewHead());
+			String message = "Merge branch 'other' of "
+					+ db.getWorkTree().getAbsolutePath();
+			assertEquals(message, mergeCommit.getShortMessage());
+		}
+	}
+
+	@Test
+	public void testPullMergeProgrammaticConfigurationImpliedTargetBranch()
+			throws Exception {
+		// create another commit on another branch in source
+		source.checkout().setCreateBranch(true).setName("other").call();
+		sourceFile = new File(db.getWorkTree(), "file2.txt");
+		writeToFile(sourceFile, "content");
+		source.add().addFilepattern("file2.txt").call();
+		RevCommit sourceCommit = source.commit()
+				.setMessage("source commit on branch other").call();
+
+		target.checkout().setCreateBranch(true).setName("other").call();
+		File targetFile2 = new File(dbTarget.getWorkTree(), "OtherFile.txt");
+		writeToFile(targetFile2, "Unconflicting change");
+		target.add().addFilepattern("OtherFile.txt").call();
+		RevCommit targetCommit = target.commit()
+				.setMessage("Unconflicting change in local").call();
+
+		// the source branch "other" matching the target branch should be
+		// implied
+		PullResult res = target.pull().setRemote("origin").setRebase(false)
+				.call();
+
+		MergeResult mergeResult = res.getMergeResult();
+		ObjectId[] mergedCommits = mergeResult.getMergedCommits();
+		assertEquals(targetCommit.getId(), mergedCommits[0]);
+		assertEquals(sourceCommit.getId(), mergedCommits[1]);
+		try (RevWalk rw = new RevWalk(dbTarget)) {
+			RevCommit mergeCommit = rw.parseCommit(mergeResult.getNewHead());
+			String message = "Merge branch 'other' of "
+					+ db.getWorkTree().getAbsolutePath() + " into other";
+			assertEquals(message, mergeCommit.getShortMessage());
+		}
+	}
+
+	private enum TestPullMode {
+		MERGE, REBASE, REBASE_PREASERVE
+	}
+
+	@Test
+	/** global rebase config should be respected */
+	public void testPullWithRebasePreserve1Config() throws Exception {
+		Callable<PullResult> setup = new Callable<PullResult>() {
+			@Override
+			public PullResult call() throws Exception {
+				StoredConfig config = dbTarget.getConfig();
+				config.setString("pull", null, "rebase", "preserve");
+				config.save();
+				return target.pull().call();
+			}
+		};
+		doTestPullWithRebase(setup, TestPullMode.REBASE_PREASERVE);
+	}
+
+	@Test
+	/** the branch-local config should win over the global config */
+	public void testPullWithRebasePreserveConfig2() throws Exception {
+		Callable<PullResult> setup = new Callable<PullResult>() {
+			@Override
+			public PullResult call() throws Exception {
+				StoredConfig config = dbTarget.getConfig();
+				config.setString("pull", null, "rebase", "false");
+				config.setString("branch", "master", "rebase", "preserve");
+				config.save();
+				return target.pull().call();
+			}
+		};
+		doTestPullWithRebase(setup, TestPullMode.REBASE_PREASERVE);
+	}
+
+	@Test
+	/** the branch-local config should be respected */
+	public void testPullWithRebasePreserveConfig3() throws Exception {
+		Callable<PullResult> setup = new Callable<PullResult>() {
+			@Override
+			public PullResult call() throws Exception {
+				StoredConfig config = dbTarget.getConfig();
+				config.setString("branch", "master", "rebase", "preserve");
+				config.save();
+				return target.pull().call();
+			}
+		};
+		doTestPullWithRebase(setup, TestPullMode.REBASE_PREASERVE);
+	}
+
+	@Test
+	/** global rebase config should be respected */
+	public void testPullWithRebaseConfig1() throws Exception {
+		Callable<PullResult> setup = new Callable<PullResult>() {
+			@Override
+			public PullResult call() throws Exception {
+				StoredConfig config = dbTarget.getConfig();
+				config.setString("pull", null, "rebase", "true");
+				config.save();
+				return target.pull().call();
+			}
+		};
+		doTestPullWithRebase(setup, TestPullMode.REBASE);
+	}
+
+	@Test
+	/** the branch-local config should win over the global config */
+	public void testPullWithRebaseConfig2() throws Exception {
+		Callable<PullResult> setup = new Callable<PullResult>() {
+			@Override
+			public PullResult call() throws Exception {
+				StoredConfig config = dbTarget.getConfig();
+				config.setString("pull", null, "rebase", "preserve");
+				config.setString("branch", "master", "rebase", "true");
+				config.save();
+				return target.pull().call();
+			}
+		};
+		doTestPullWithRebase(setup, TestPullMode.REBASE);
+	}
+
+	@Test
+	/** the branch-local config should be respected */
+	public void testPullWithRebaseConfig3() throws Exception {
+		Callable<PullResult> setup = new Callable<PullResult>() {
+			@Override
+			public PullResult call() throws Exception {
+				StoredConfig config = dbTarget.getConfig();
+				config.setString("branch", "master", "rebase", "true");
+				config.save();
+				return target.pull().call();
+			}
+		};
+		doTestPullWithRebase(setup, TestPullMode.REBASE);
+	}
+
+	@Test
+	/** without config it should merge */
+	public void testPullWithoutConfig() throws Exception {
+		Callable<PullResult> setup = new Callable<PullResult>() {
+			@Override
+			public PullResult call() throws Exception {
+				return target.pull().call();
+			}
+		};
+		doTestPullWithRebase(setup, TestPullMode.MERGE);
+	}
+
+	@Test
+	/** the branch local config should win over the global config */
+	public void testPullWithMergeConfig() throws Exception {
+		Callable<PullResult> setup = new Callable<PullResult>() {
+			@Override
+			public PullResult call() throws Exception {
+				StoredConfig config = dbTarget.getConfig();
+				config.setString("pull", null, "rebase", "true");
+				config.setString("branch", "master", "rebase", "false");
+				config.save();
+				return target.pull().call();
+			}
+		};
+		doTestPullWithRebase(setup, TestPullMode.MERGE);
+	}
+
+	@Test
+	/** the branch local config should win over the global config */
+	public void testPullWithMergeConfig2() throws Exception {
+		Callable<PullResult> setup = new Callable<PullResult>() {
+			@Override
+			public PullResult call() throws Exception {
+				StoredConfig config = dbTarget.getConfig();
+				config.setString("pull", null, "rebase", "false");
+				config.save();
+				return target.pull().call();
+			}
+		};
+		doTestPullWithRebase(setup, TestPullMode.MERGE);
+	}
+
+	private void doTestPullWithRebase(Callable<PullResult> pullSetup,
+			TestPullMode expectedPullMode) throws Exception {
+		// simple upstream change
+		writeToFile(sourceFile, "content");
+		source.add().addFilepattern(sourceFile.getName()).call();
+		RevCommit sourceCommit = source.commit().setMessage("source commit")
+				.call();
+
+		// create a merge commit in target
+		File loxalFile = new File(dbTarget.getWorkTree(), "local.txt");
+		writeToFile(loxalFile, "initial\n");
+		target.add().addFilepattern("local.txt").call();
+		RevCommit t1 = target.commit().setMessage("target commit 1").call();
+
+		target.checkout().setCreateBranch(true).setName("side").call();
+
+		String newContent = "initial\n" + "and more\n";
+		writeToFile(loxalFile, newContent);
+		target.add().addFilepattern("local.txt").call();
+		RevCommit t2 = target.commit().setMessage("target commit 2").call();
+
+		target.checkout().setName("master").call();
+
+		MergeResult mergeResult = target.merge()
+				.setFastForward(MergeCommand.FastForwardMode.NO_FF).include(t2)
+				.call();
+		assertEquals(MergeStatus.MERGED, mergeResult.getMergeStatus());
+		assertFileContentsEqual(loxalFile, newContent);
+		ObjectId merge = mergeResult.getNewHead();
+
+		// pull
+		PullResult res = pullSetup.call();
+		assertNotNull(res.getFetchResult());
+
+		if (expectedPullMode == TestPullMode.MERGE) {
+			assertEquals(MergeStatus.MERGED, res.getMergeResult()
+					.getMergeStatus());
+			assertNull(res.getRebaseResult());
+		} else {
+			assertNull(res.getMergeResult());
+			assertEquals(RebaseResult.OK_RESULT, res.getRebaseResult());
+		}
+		assertFileContentsEqual(sourceFile, "content");
+
+		try (RevWalk rw = new RevWalk(dbTarget)) {
+			rw.sort(RevSort.TOPO);
+			rw.markStart(rw.parseCommit(dbTarget.resolve("refs/heads/master")));
+
+			RevCommit next;
+			if (expectedPullMode == TestPullMode.MERGE) {
+				next = rw.next();
+				assertEquals(2, next.getParentCount());
+				assertEquals(merge, next.getParent(0));
+				assertEquals(sourceCommit, next.getParent(1));
+				// since both parents are known do no further checks here
+			} else {
+				if (expectedPullMode == TestPullMode.REBASE_PREASERVE) {
+					next = rw.next();
+					assertEquals(2, next.getParentCount());
+				}
+				next = rw.next();
+				assertEquals(t2.getShortMessage(), next.getShortMessage());
+				next = rw.next();
+				assertEquals(t1.getShortMessage(), next.getShortMessage());
+				next = rw.next();
+				assertEquals(sourceCommit, next);
+				next = rw.next();
+				assertEquals("Initial commit for source",
+						next.getShortMessage());
+				next = rw.next();
+				assertNull(next);
+			}
+		}
+	}
+
 	@Override
 	@Before
 	public void setUp() throws Exception {
@@ -256,7 +576,7 @@ public class PullCommandTest extends RepositoryTestCase {
 
 		config
 				.addURI(new URIish(source.getRepository().getWorkTree()
-						.getPath()));
+						.getAbsolutePath()));
 		config.addFetchRefSpec(new RefSpec(
 				"+refs/heads/*:refs/remotes/origin/*"));
 		config.update(targetConfig);
@@ -268,7 +588,8 @@ public class PullCommandTest extends RepositoryTestCase {
 		assertFileContentsEqual(targetFile, "Hello world");
 	}
 
-	private void writeToFile(File actFile, String string) throws IOException {
+	private static void writeToFile(File actFile, String string)
+			throws IOException {
 		FileOutputStream fos = null;
 		try {
 			fos = new FileOutputStream(actFile);
@@ -280,7 +601,7 @@ public class PullCommandTest extends RepositoryTestCase {
 		}
 	}
 
-	private void assertFileContentsEqual(File actFile, String string)
+	private static void assertFileContentsEqual(File actFile, String string)
 			throws IOException {
 		ByteArrayOutputStream bos = new ByteArrayOutputStream();
 		FileInputStream fis = null;

@@ -63,10 +63,13 @@ import org.eclipse.jgit.lib.ObjectStream;
  * will not exceed 1 MiB per instance. The index starts out at a smaller size
  * (closer to 2 KiB), but may grow as more distinct blocks within the scanned
  * file are discovered.
+ *
+ * @since 4.0
  */
-class SimilarityIndex {
+public class SimilarityIndex {
 	/** A special {@link TableFullException} used in place of OutOfMemoryError. */
-	private static final TableFullException TABLE_FULL_OUT_OF_MEMORY = new TableFullException();
+	public static final TableFullException
+			TABLE_FULL_OUT_OF_MEMORY = new TableFullException();
 
 	/**
 	 * Shift to apply before storing a key.
@@ -79,8 +82,11 @@ class SimilarityIndex {
 	/** Maximum value of the count field, also mask to extract the count. */
 	private static final long MAX_COUNT = (1L << KEY_SHIFT) - 1;
 
-	/** Total size of the file we hashed into the structure. */
-	private long fileSize;
+	/**
+	 * Total amount of bytes hashed into the structure, including \n. This is
+	 * usually the size of the file minus number of CRLF encounters.
+	 */
+	private long hashedCnt;
 
 	/** Number of non-zero entries in {@link #idHash}. */
 	private int idSize;
@@ -102,54 +108,85 @@ class SimilarityIndex {
 	/** {@code idHash.length == 1 << idHashBits}. */
 	private int idHashBits;
 
+	/**
+	 * Create a new similarity index for the given object
+	 *
+	 * @param obj
+	 *            the object to hash
+	 * @return similarity index for this object
+	 * @throws IOException
+	 *             file contents cannot be read from the repository.
+	 * @throws TableFullException
+	 *             object hashing overflowed the storage capacity of the
+	 *             SimilarityIndex.
+	 */
+	public static SimilarityIndex create(ObjectLoader obj) throws IOException,
+			TableFullException {
+		SimilarityIndex idx = new SimilarityIndex();
+		idx.hash(obj);
+		idx.sort();
+		return idx;
+	}
+
 	SimilarityIndex() {
 		idHashBits = 8;
 		idHash = new long[1 << idHashBits];
 		idGrowAt = growAt(idHashBits);
 	}
 
-	long getFileSize() {
-		return fileSize;
-	}
-
-	void setFileSize(long size) {
-		fileSize = size;
-	}
-
 	void hash(ObjectLoader obj) throws MissingObjectException, IOException,
 			TableFullException {
 		if (obj.isLarge()) {
-			ObjectStream in = obj.openStream();
-			try {
-				setFileSize(in.getSize());
-				hash(in, fileSize);
-			} finally {
-				in.close();
-			}
+			hashLargeObject(obj);
 		} else {
 			byte[] raw = obj.getCachedBytes();
-			setFileSize(raw.length);
 			hash(raw, 0, raw.length);
 		}
 	}
 
+	private void hashLargeObject(ObjectLoader obj) throws IOException,
+			TableFullException {
+		ObjectStream in1 = obj.openStream();
+		boolean text;
+		try {
+			text = !RawText.isBinary(in1);
+		} finally {
+			in1.close();
+		}
+
+		ObjectStream in2 = obj.openStream();
+		try {
+			hash(in2, in2.getSize(), text);
+		} finally {
+			in2.close();
+		}
+	}
+
 	void hash(byte[] raw, int ptr, final int end) throws TableFullException {
+		final boolean text = !RawText.isBinary(raw);
+		hashedCnt = 0;
 		while (ptr < end) {
 			int hash = 5381;
+			int blockHashedCnt = 0;
 			int start = ptr;
 
 			// Hash one line, or one block, whichever occurs first.
 			do {
 				int c = raw[ptr++] & 0xff;
+				// Ignore CR in CRLF sequence if text
+				if (text && c == '\r' && ptr < end && raw[ptr] == '\n')
+					continue;
+				blockHashedCnt++;
 				if (c == '\n')
 					break;
 				hash = (hash << 5) + hash + c;
 			} while (ptr < end && ptr - start < 64);
-			add(hash, ptr - start);
+			hashedCnt += blockHashedCnt;
+			add(hash, blockHashedCnt);
 		}
 	}
 
-	void hash(InputStream in, long remaining) throws IOException,
+	void hash(InputStream in, long remaining, boolean text) throws IOException,
 			TableFullException {
 		byte[] buf = new byte[4096];
 		int ptr = 0;
@@ -157,6 +194,7 @@ class SimilarityIndex {
 
 		while (0 < remaining) {
 			int hash = 5381;
+			int blockHashedCnt = 0;
 
 			// Hash one line, or one block, whichever occurs first.
 			int n = 0;
@@ -170,11 +208,16 @@ class SimilarityIndex {
 
 				n++;
 				int c = buf[ptr++] & 0xff;
+				// Ignore CR in CRLF sequence if text
+				if (text && c == '\r' && ptr < cnt && buf[ptr] == '\n')
+					continue;
+				blockHashedCnt++;
 				if (c == '\n')
 					break;
 				hash = (hash << 5) + hash + c;
 			} while (n < 64 && n < remaining);
-			add(hash, n);
+			hashedCnt += blockHashedCnt;
+			add(hash, blockHashedCnt);
 			remaining -= n;
 		}
 	}
@@ -192,8 +235,28 @@ class SimilarityIndex {
 		Arrays.sort(idHash);
 	}
 
-	int score(SimilarityIndex dst, int maxScore) {
-		long max = Math.max(fileSize, dst.fileSize);
+	/**
+	 * Compute the similarity score between this index and another.
+	 * <p>
+	 * A region of a file is defined as a line in a text file or a fixed-size
+	 * block in a binary file. To prepare an index, each region in the file is
+	 * hashed; the values and counts of hashes are retained in a sorted table.
+	 * Define the similarity fraction F as the the count of matching regions
+	 * between the two files divided between the maximum count of regions in
+	 * either file. The similarity score is F multiplied by the maxScore
+	 * constant, yielding a range [0, maxScore]. It is defined as maxScore for
+	 * the degenerate case of two empty files.
+	 * <p>
+	 * The similarity score is symmetrical; i.e. a.score(b) == b.score(a).
+	 *
+	 * @param dst
+	 *            the other index
+	 * @param maxScore
+	 *            the score representing a 100% match
+	 * @return the similarity score
+	 */
+	public int score(SimilarityIndex dst, int maxScore) {
+		long max = Math.max(hashedCnt, dst.hashedCnt);
 		if (max == 0)
 			return maxScore;
 		return (int) ((common(dst) * maxScore) / max);
@@ -361,7 +424,8 @@ class SimilarityIndex {
 		return v & MAX_COUNT;
 	}
 
-	static class TableFullException extends Exception {
+	/** Thrown by {@code create()} when file is too large. */
+	public static class TableFullException extends Exception {
 		private static final long serialVersionUID = 1L;
 	}
 }

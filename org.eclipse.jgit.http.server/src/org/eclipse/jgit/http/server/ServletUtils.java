@@ -44,6 +44,7 @@
 package org.eclipse.jgit.http.server;
 
 import static org.eclipse.jgit.util.HttpSupport.ENCODING_GZIP;
+import static org.eclipse.jgit.util.HttpSupport.ENCODING_X_GZIP;
 import static org.eclipse.jgit.util.HttpSupport.HDR_ACCEPT_ENCODING;
 import static org.eclipse.jgit.util.HttpSupport.HDR_CONTENT_ENCODING;
 import static org.eclipse.jgit.util.HttpSupport.HDR_ETAG;
@@ -62,6 +63,7 @@ import javax.servlet.ServletRequest;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
+import org.eclipse.jgit.internal.storage.dfs.DfsRepository;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Repository;
@@ -110,7 +112,7 @@ public final class ServletUtils {
 			throws IOException {
 		InputStream in = req.getInputStream();
 		final String enc = req.getHeader(HDR_CONTENT_ENCODING);
-		if (ENCODING_GZIP.equals(enc) || "x-gzip".equals(enc)) //$NON-NLS-1$
+		if (ENCODING_GZIP.equals(enc) || ENCODING_X_GZIP.equals(enc)) //$NON-NLS-1$
 			in = new GZIPInputStream(in);
 		else if (enc != null)
 			throw new IOException(MessageFormat.format(HttpServerText.get().encodingNotSupportedByThisLibrary
@@ -271,6 +273,15 @@ public final class ServletUtils {
 		final MessageDigest md = Constants.newMessageDigest();
 		md.update(content);
 		return ObjectId.fromRaw(md.digest()).getName();
+	}
+
+	static String identify(Repository git) {
+		if (git instanceof DfsRepository) {
+			return ((DfsRepository) git).getDescription().getRepositoryName();
+		} else if (git.getDirectory() != null) {
+			return git.getDirectory().getPath();
+		}
+		return "unknown";
 	}
 
 	private ServletUtils() {

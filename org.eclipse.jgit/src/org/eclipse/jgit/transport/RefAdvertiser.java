@@ -43,7 +43,16 @@
 
 package org.eclipse.jgit.transport;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.eclipse.jgit.lib.Constants.OBJECT_ID_STRING_LENGTH;
+import static org.eclipse.jgit.transport.GitProtocolConstants.OPTION_SYMREF;
+
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CharsetEncoder;
+import java.nio.charset.CoderResult;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.Map;
@@ -62,7 +71,14 @@ import org.eclipse.jgit.util.RefMap;
 public abstract class RefAdvertiser {
 	/** Advertiser which frames lines in a {@link PacketLineOut} format. */
 	public static class PacketLineOutRefAdvertiser extends RefAdvertiser {
+		private final CharsetEncoder utf8 = UTF_8.newEncoder();
 		private final PacketLineOut pckOut;
+
+		private byte[] binArr = new byte[256];
+		private ByteBuffer binBuf = ByteBuffer.wrap(binArr);
+
+		private char[] chArr = new char[256];
+		private CharBuffer chBuf = CharBuffer.wrap(chArr);
 
 		/**
 		 * Create a new advertiser for the supplied stream.
@@ -72,6 +88,64 @@ public abstract class RefAdvertiser {
 		 */
 		public PacketLineOutRefAdvertiser(PacketLineOut out) {
 			pckOut = out;
+		}
+
+		@Override
+		public void advertiseId(AnyObjectId id, String refName)
+				throws IOException {
+			id.copyTo(binArr, 0);
+			binArr[OBJECT_ID_STRING_LENGTH] = ' ';
+			binBuf.position(OBJECT_ID_STRING_LENGTH + 1);
+			append(refName);
+			if (first) {
+				first = false;
+				if (!capablities.isEmpty()) {
+					append('\0');
+					for (String cap : capablities) {
+						append(' ');
+						append(cap);
+					}
+				}
+			}
+			append('\n');
+			pckOut.writePacket(binArr, 0, binBuf.position());
+		}
+
+		private void append(String str) throws CharacterCodingException {
+			int n = str.length();
+			if (n > chArr.length) {
+				chArr = new char[n + 256];
+				chBuf = CharBuffer.wrap(chArr);
+			}
+			str.getChars(0, n, chArr, 0);
+			chBuf.position(0).limit(n);
+			utf8.reset();
+			for (;;) {
+				CoderResult cr = utf8.encode(chBuf, binBuf, true);
+				if (cr.isOverflow()) {
+					grow();
+				} else if (cr.isUnderflow()) {
+					break;
+				} else {
+					cr.throwException();
+				}
+			}
+		}
+
+		private void append(int b) {
+			if (!binBuf.hasRemaining()) {
+				grow();
+			}
+			binBuf.put((byte) b);
+		}
+
+		private void grow() {
+			int cnt = binBuf.position();
+			byte[] tmp = new byte[binArr.length << 1];
+			System.arraycopy(binArr, 0, tmp, 0, cnt);
+			binArr = tmp;
+			binBuf = ByteBuffer.wrap(binArr);
+			binBuf.position(cnt);
 		}
 
 		@Override
@@ -89,15 +163,15 @@ public abstract class RefAdvertiser {
 
 	private final char[] tmpId = new char[Constants.OBJECT_ID_STRING_LENGTH];
 
-	private final Set<String> capablities = new LinkedHashSet<String>();
+	final Set<String> capablities = new LinkedHashSet<>();
 
-	private final Set<ObjectId> sent = new HashSet<ObjectId>();
+	private final Set<ObjectId> sent = new HashSet<>();
 
 	private Repository repository;
 
 	private boolean derefTags;
 
-	private boolean first = true;
+	boolean first = true;
 
 	/**
 	 * Initialize this advertiser with a repository for peeling tags.
@@ -146,6 +220,41 @@ public abstract class RefAdvertiser {
 	}
 
 	/**
+	 * Add one protocol capability with a value ({@code "name=value"}).
+	 *
+	 * @param name
+	 *            name of the capability.
+	 * @param value
+	 *            value. If null the capability will not be added.
+	 * @since 4.0
+	 */
+	public void advertiseCapability(String name, String value) {
+		if (value != null) {
+			capablities.add(name + '=' + value);
+		}
+	}
+
+	/**
+	 * Add a symbolic ref to capabilities.
+	 * <p>
+	 * This method must be invoked prior to any of the following:
+	 * <ul>
+	 * <li>{@link #send(Map)}
+	 * <li>{@link #advertiseHave(AnyObjectId)}
+	 * </ul>
+	 *
+	 * @param from
+	 *            The symbolic ref, e.g. "HEAD"
+	 * @param to
+	 *            The real ref it points to, e.g. "refs/heads/master"
+	 *
+	 * @since 3.6
+	 */
+	public void addSymref(String from, String to) {
+		advertiseCapability(OPTION_SYMREF, from + ':' + to);
+	}
+
+	/**
 	 * Format an advertisement for the supplied refs.
 	 *
 	 * @param refs
@@ -174,7 +283,7 @@ public abstract class RefAdvertiser {
 			}
 
 			if (ref.getPeeledObjectId() != null)
-				advertiseAny(ref.getPeeledObjectId(), ref.getName() + "^{}");
+				advertiseAny(ref.getPeeledObjectId(), ref.getName() + "^{}"); //$NON-NLS-1$
 		}
 		return sent;
 	}
@@ -201,7 +310,7 @@ public abstract class RefAdvertiser {
 	 *             advertisement record.
 	 */
 	public void advertiseHave(AnyObjectId id) throws IOException {
-		advertiseAnyOnce(id, ".have");
+		advertiseAnyOnce(id, ".have"); //$NON-NLS-1$
 	}
 
 	/** @return true if no advertisements have been sent yet. */

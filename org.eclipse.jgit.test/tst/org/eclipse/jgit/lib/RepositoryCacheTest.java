@@ -43,11 +43,13 @@
 
 package org.eclipse.jgit.lib;
 
+import static org.hamcrest.CoreMatchers.hasItem;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -55,22 +57,23 @@ import java.io.File;
 import java.io.IOException;
 
 import org.eclipse.jgit.errors.RepositoryNotFoundException;
+import org.eclipse.jgit.junit.RepositoryTestCase;
 import org.eclipse.jgit.lib.RepositoryCache.FileKey;
 import org.junit.Test;
 
 public class RepositoryCacheTest extends RepositoryTestCase {
 	@Test
-	public void testNonBareFileKey() {
+	public void testNonBareFileKey() throws IOException {
 		File gitdir = db.getDirectory();
 		File parent = gitdir.getParentFile();
 		File other = new File(parent, "notagit");
-		assertEquals(gitdir, FileKey.exact(gitdir, db.getFS()).getFile());
-		assertEquals(parent, FileKey.exact(parent, db.getFS()).getFile());
-		assertEquals(other, FileKey.exact(other, db.getFS()).getFile());
+		assertEqualsFile(gitdir, FileKey.exact(gitdir, db.getFS()).getFile());
+		assertEqualsFile(parent, FileKey.exact(parent, db.getFS()).getFile());
+		assertEqualsFile(other, FileKey.exact(other, db.getFS()).getFile());
 
-		assertEquals(gitdir, FileKey.lenient(gitdir, db.getFS()).getFile());
-		assertEquals(gitdir, FileKey.lenient(parent, db.getFS()).getFile());
-		assertEquals(other, FileKey.lenient(other, db.getFS()).getFile());
+		assertEqualsFile(gitdir, FileKey.lenient(gitdir, db.getFS()).getFile());
+		assertEqualsFile(gitdir, FileKey.lenient(parent, db.getFS()).getFile());
+		assertEqualsFile(other, FileKey.lenient(other, db.getFS()).getFile());
 	}
 
 	@Test
@@ -82,10 +85,11 @@ public class RepositoryCacheTest extends RepositoryTestCase {
 		assertTrue(name.endsWith(".git"));
 		name = name.substring(0, name.length() - 4);
 
-		assertEquals(gitdir, FileKey.exact(gitdir, db.getFS()).getFile());
+		assertEqualsFile(gitdir, FileKey.exact(gitdir, db.getFS()).getFile());
 
-		assertEquals(gitdir, FileKey.lenient(gitdir, db.getFS()).getFile());
-		assertEquals(gitdir, FileKey.lenient(new File(parent, name), db.getFS()).getFile());
+		assertEqualsFile(gitdir, FileKey.lenient(gitdir, db.getFS()).getFile());
+		assertEqualsFile(gitdir,
+				FileKey.lenient(new File(parent, name), db.getFS()).getFile());
 	}
 
 	@Test
@@ -94,18 +98,18 @@ public class RepositoryCacheTest extends RepositoryTestCase {
 
 		r = new FileKey(db.getDirectory(), db.getFS()).open(true);
 		assertNotNull(r);
-		assertEquals(db.getDirectory(), r.getDirectory());
+		assertEqualsFile(db.getDirectory(), r.getDirectory());
 		r.close();
 
 		r = new FileKey(db.getDirectory(), db.getFS()).open(false);
 		assertNotNull(r);
-		assertEquals(db.getDirectory(), r.getDirectory());
+		assertEqualsFile(db.getDirectory(), r.getDirectory());
 		r.close();
 	}
 
 	@Test
 	public void testFileKeyOpenNew() throws IOException {
-		final Repository n = createBareRepository();
+		final Repository n = createRepository(true, false);
 		final File gitdir = n.getDirectory();
 		n.close();
 		recursiveDelete(gitdir);
@@ -115,12 +119,13 @@ public class RepositoryCacheTest extends RepositoryTestCase {
 			new FileKey(gitdir, db.getFS()).open(true);
 			fail("incorrectly opened a non existant repository");
 		} catch (RepositoryNotFoundException e) {
-			assertEquals("repository not found: " + gitdir, e.getMessage());
+			assertEquals("repository not found: " + gitdir.getCanonicalPath(),
+					e.getMessage());
 		}
 
 		final Repository o = new FileKey(gitdir, db.getFS()).open(false);
 		assertNotNull(o);
-		assertEquals(gitdir, o.getDirectory());
+		assertEqualsFile(gitdir, o.getDirectory());
 		assertFalse(gitdir.exists());
 	}
 
@@ -143,5 +148,152 @@ public class RepositoryCacheTest extends RepositoryTestCase {
 		assertSame(d2, RepositoryCache.open(FileKey.exact(loc.getFile(), db.getFS())));
 		d2.close();
 		d2.close();
+	}
+
+	@Test
+	public void testGetRegisteredWhenEmpty() {
+		assertEquals(0, RepositoryCache.getRegisteredKeys().size());
+	}
+
+	@Test
+	public void testGetRegistered() {
+		RepositoryCache.register(db);
+
+		assertThat(RepositoryCache.getRegisteredKeys(),
+				hasItem(FileKey.exact(db.getDirectory(), db.getFS())));
+		assertEquals(1, RepositoryCache.getRegisteredKeys().size());
+	}
+
+	@Test
+	public void testUnregister() {
+		RepositoryCache.register(db);
+		RepositoryCache
+				.unregister(FileKey.exact(db.getDirectory(), db.getFS()));
+
+		assertEquals(0, RepositoryCache.getRegisteredKeys().size());
+	}
+
+	@Test
+	public void testRepositoryUsageCount() throws Exception {
+		FileKey loc = FileKey.exact(db.getDirectory(), db.getFS());
+		Repository d2 = RepositoryCache.open(loc);
+		assertEquals(1, d2.useCnt.get());
+		RepositoryCache.open(FileKey.exact(loc.getFile(), db.getFS()));
+		assertEquals(2, d2.useCnt.get());
+		d2.close();
+		assertEquals(1, d2.useCnt.get());
+		d2.close();
+		assertEquals(0, d2.useCnt.get());
+	}
+
+	@Test
+	public void testRepositoryUsageCountWithRegisteredRepository()
+			throws IOException {
+		Repository repo = createRepository(false, false);
+		assertEquals(1, repo.useCnt.get());
+		RepositoryCache.register(repo);
+		assertEquals(1, repo.useCnt.get());
+		repo.close();
+		assertEquals(0, repo.useCnt.get());
+	}
+
+	@Test
+	public void testRepositoryNotUnregisteringWhenClosing() throws Exception {
+		FileKey loc = FileKey.exact(db.getDirectory(), db.getFS());
+		Repository d2 = RepositoryCache.open(loc);
+		assertEquals(1, d2.useCnt.get());
+		assertThat(RepositoryCache.getRegisteredKeys(),
+				hasItem(FileKey.exact(db.getDirectory(), db.getFS())));
+		assertEquals(1, RepositoryCache.getRegisteredKeys().size());
+		d2.close();
+		assertEquals(0, d2.useCnt.get());
+		assertEquals(1, RepositoryCache.getRegisteredKeys().size());
+		assertTrue(RepositoryCache.isCached(d2));
+	}
+
+	@Test
+	public void testRepositoryUnregisteringWhenExpiredAndUsageCountNegative()
+			throws Exception {
+		Repository repoA = createBareRepository();
+		RepositoryCache.register(repoA);
+
+		assertEquals(1, RepositoryCache.getRegisteredKeys().size());
+		assertTrue(RepositoryCache.isCached(repoA));
+
+		// close the repo twice to make usage count negative
+		repoA.close();
+		repoA.close();
+		// fake that repoA was closed more than 1 hour ago (default expiration
+		// time)
+		repoA.closedAt.set(System.currentTimeMillis() - 65 * 60 * 1000);
+
+		RepositoryCache.clearExpired();
+
+		assertEquals(0, RepositoryCache.getRegisteredKeys().size());
+	}
+
+	@Test
+	public void testRepositoryUnregisteringWhenExpired() throws Exception {
+		Repository repoA = createRepository(true, false);
+		Repository repoB = createRepository(true, false);
+		Repository repoC = createBareRepository();
+		RepositoryCache.register(repoA);
+		RepositoryCache.register(repoB);
+		RepositoryCache.register(repoC);
+
+		assertEquals(3, RepositoryCache.getRegisteredKeys().size());
+		assertTrue(RepositoryCache.isCached(repoA));
+		assertTrue(RepositoryCache.isCached(repoB));
+		assertTrue(RepositoryCache.isCached(repoC));
+
+		// fake that repoA was closed more than 1 hour ago (default expiration
+		// time)
+		repoA.close();
+		repoA.closedAt.set(System.currentTimeMillis() - 65 * 60 * 1000);
+		// close repoB but this one will not be expired
+		repoB.close();
+
+		assertEquals(3, RepositoryCache.getRegisteredKeys().size());
+		assertTrue(RepositoryCache.isCached(repoA));
+		assertTrue(RepositoryCache.isCached(repoB));
+		assertTrue(RepositoryCache.isCached(repoC));
+
+		RepositoryCache.clearExpired();
+
+		assertEquals(2, RepositoryCache.getRegisteredKeys().size());
+		assertFalse(RepositoryCache.isCached(repoA));
+		assertTrue(RepositoryCache.isCached(repoB));
+		assertTrue(RepositoryCache.isCached(repoC));
+	}
+
+	@Test
+	public void testReconfigure() throws InterruptedException, IOException {
+		Repository repo = createRepository(false, false);
+		RepositoryCache.register(repo);
+		assertTrue(RepositoryCache.isCached(repo));
+		repo.close();
+		assertTrue(RepositoryCache.isCached(repo));
+
+		// Actually, we would only need to validate that
+		// WorkQueue.getExecutor().scheduleWithFixedDelay is called with proper
+		// values but since we do not have a mock library, we test
+		// reconfiguration from a black box perspective. I.e. reconfigure
+		// expireAfter and cleanupDelay to 1 ms and wait until the Repository
+		// is evicted to prove that reconfiguration worked.
+		RepositoryCacheConfig config = new RepositoryCacheConfig();
+		config.setExpireAfter(1);
+		config.setCleanupDelay(1);
+		config.install();
+
+		// Instead of using a fixed waiting time, start with small and increase:
+		// sleep 1, 2, 4, 8, 16, ..., 1024 ms
+		// This wait will time out after 2048 ms
+		for (int i = 0; i <= 10; i++) {
+			Thread.sleep(1 << i);
+			if (!RepositoryCache.isCached(repo)) {
+				return;
+			}
+		}
+		fail("Repository should have been evicted from cache");
 	}
 }

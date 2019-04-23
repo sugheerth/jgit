@@ -43,6 +43,8 @@
 
 package org.eclipse.jgit.http.server.glue;
 
+import static java.lang.Integer.valueOf;
+
 import java.io.IOException;
 import java.text.MessageFormat;
 
@@ -72,18 +74,22 @@ public class RegexGroupFilter implements Filter {
 	 */
 	public RegexGroupFilter(final int groupIdx) {
 		if (groupIdx < 1)
-			throw new IllegalArgumentException(MessageFormat.format(HttpServerText.get().invalidIndex, groupIdx));
+			throw new IllegalArgumentException(MessageFormat.format(
+					HttpServerText.get().invalidIndex, valueOf(groupIdx)));
 		this.groupIdx = groupIdx - 1;
 	}
 
+	@Override
 	public void init(FilterConfig config) throws ServletException {
 		// Do nothing.
 	}
 
+	@Override
 	public void destroy() {
 		// Do nothing.
 	}
 
+	@Override
 	public void doFilter(final ServletRequest request,
 			final ServletResponse rsp, final FilterChain chain)
 			throws IOException, ServletException {
@@ -91,7 +97,9 @@ public class RegexGroupFilter implements Filter {
 		if (groupIdx < g.length)
 			chain.doFilter(g[groupIdx], rsp);
 		else
-			throw new ServletException(MessageFormat.format(HttpServerText.get().invalidRegexGroup, (groupIdx + 1)));
+			throw new ServletException(MessageFormat.format(
+					HttpServerText.get().invalidRegexGroup,
+					valueOf(groupIdx + 1)));
 	}
 
 	private static WrappedRequest[] groupsFor(final ServletRequest r) {

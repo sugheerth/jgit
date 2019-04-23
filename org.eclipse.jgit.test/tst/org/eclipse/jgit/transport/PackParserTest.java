@@ -62,17 +62,17 @@ import java.util.zip.Deflater;
 
 import org.eclipse.jgit.errors.TooLargeObjectInPackException;
 import org.eclipse.jgit.internal.JGitText;
+import org.eclipse.jgit.internal.storage.file.ObjectDirectoryPackParser;
+import org.eclipse.jgit.internal.storage.file.PackFile;
 import org.eclipse.jgit.junit.JGitTestUtil;
+import org.eclipse.jgit.junit.RepositoryTestCase;
 import org.eclipse.jgit.junit.TestRepository;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.NullProgressMonitor;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.ObjectInserter;
 import org.eclipse.jgit.lib.Repository;
-import org.eclipse.jgit.lib.RepositoryTestCase;
 import org.eclipse.jgit.revwalk.RevBlob;
-import org.eclipse.jgit.storage.file.ObjectDirectoryPackParser;
-import org.eclipse.jgit.storage.file.PackFile;
 import org.eclipse.jgit.util.NB;
 import org.eclipse.jgit.util.TemporaryBuffer;
 import org.eclipse.jgit.util.io.UnionInputStream;
@@ -148,7 +148,7 @@ public class PackParserTest extends RepositoryTestCase {
 
 	@Test
 	public void testTinyThinPack() throws Exception {
-		TestRepository d = new TestRepository(db);
+		TestRepository d = new TestRepository<Repository>(db);
 		RevBlob a = d.blob("a");
 
 		TemporaryBuffer.Heap pack = new TemporaryBuffer.Heap(1024);
@@ -169,7 +169,7 @@ public class PackParserTest extends RepositoryTestCase {
 	@Test
 	public void testPackWithDuplicateBlob() throws Exception {
 		final byte[] data = Constants.encode("0123456789abcdefg");
-		TestRepository<Repository> d = new TestRepository<Repository>(db);
+		TestRepository<Repository> d = new TestRepository<>(db);
 		assertTrue(db.hasObject(d.blob(data)));
 
 		TemporaryBuffer.Heap pack = new TemporaryBuffer.Heap(1024);
@@ -186,7 +186,7 @@ public class PackParserTest extends RepositoryTestCase {
 
 	@Test
 	public void testPackWithTrailingGarbage() throws Exception {
-		TestRepository d = new TestRepository(db);
+		TestRepository d = new TestRepository<Repository>(db);
 		RevBlob a = d.blob("a");
 
 		TemporaryBuffer.Heap pack = new TemporaryBuffer.Heap(1024);
@@ -213,7 +213,7 @@ public class PackParserTest extends RepositoryTestCase {
 
 	@Test
 	public void testMaxObjectSizeFullBlob() throws Exception {
-		TestRepository d = new TestRepository(db);
+		TestRepository d = new TestRepository<Repository>(db);
 		final byte[] data = Constants.encode("0123456789");
 		d.blob(data);
 
@@ -245,7 +245,7 @@ public class PackParserTest extends RepositoryTestCase {
 
 	@Test
 	public void testMaxObjectSizeDeltaBlock() throws Exception {
-		TestRepository d = new TestRepository(db);
+		TestRepository d = new TestRepository<Repository>(db);
 		RevBlob a = d.blob("a");
 
 		TemporaryBuffer.Heap pack = new TemporaryBuffer.Heap(1024);
@@ -276,7 +276,7 @@ public class PackParserTest extends RepositoryTestCase {
 
 	@Test
 	public void testMaxObjectSizeDeltaResultSize() throws Exception {
-		TestRepository d = new TestRepository(db);
+		TestRepository d = new TestRepository<Repository>(db);
 		RevBlob a = d.blob("0123456789");
 
 		TemporaryBuffer.Heap pack = new TemporaryBuffer.Heap(1024);
@@ -306,7 +306,7 @@ public class PackParserTest extends RepositoryTestCase {
 
 	@Test
 	public void testNonMarkingInputStream() throws Exception {
-		TestRepository d = new TestRepository(db);
+		TestRepository d = new TestRepository<Repository>(db);
 		RevBlob a = d.blob("a");
 
 		TemporaryBuffer.Heap pack = new TemporaryBuffer.Heap(1024);
@@ -344,7 +344,7 @@ public class PackParserTest extends RepositoryTestCase {
 
 	@Test
 	public void testDataAfterPackFooterSingleRead() throws Exception {
-		TestRepository d = new TestRepository(db);
+		TestRepository d = new TestRepository<Repository>(db);
 		RevBlob a = d.blob("a");
 
 		TemporaryBuffer.Heap pack = new TemporaryBuffer.Heap(32*1024);
@@ -402,7 +402,7 @@ public class PackParserTest extends RepositoryTestCase {
 
 	@Test
 	public void testDataAfterPackFooterSplitHeaderRead() throws Exception {
-		TestRepository d = new TestRepository(db);
+		TestRepository d = new TestRepository<Repository>(db);
 		final byte[] data = Constants.encode("a");
 		RevBlob b = d.blob(data);
 
@@ -452,7 +452,7 @@ public class PackParserTest extends RepositoryTestCase {
 		assertEquals(0x7e, in.read());
 	}
 
-	private void packHeader(TemporaryBuffer.Heap tinyPack, int cnt)
+	private static void packHeader(TemporaryBuffer.Heap tinyPack, int cnt)
 			throws IOException {
 		final byte[] hdr = new byte[8];
 		NB.encodeInt32(hdr, 0, 2);
@@ -462,7 +462,8 @@ public class PackParserTest extends RepositoryTestCase {
 		tinyPack.write(hdr, 0, 8);
 	}
 
-	private void deflate(TemporaryBuffer.Heap tinyPack, final byte[] content)
+	private static void deflate(TemporaryBuffer.Heap tinyPack,
+			final byte[] content)
 			throws IOException {
 		final Deflater deflater = new Deflater();
 		final byte[] buf = new byte[128];
@@ -475,7 +476,7 @@ public class PackParserTest extends RepositoryTestCase {
 		} while (!deflater.finished());
 	}
 
-	private void digest(TemporaryBuffer.Heap buf) throws IOException {
+	private static void digest(TemporaryBuffer.Heap buf) throws IOException {
 		MessageDigest md = Constants.newMessageDigest();
 		md.update(buf.toByteArray());
 		buf.write(md.digest());
@@ -485,8 +486,9 @@ public class PackParserTest extends RepositoryTestCase {
 
 	@After
 	public void release() {
-		if (inserter != null)
-			inserter.release();
+		if (inserter != null) {
+			inserter.close();
+		}
 	}
 
 	private PackParser index(InputStream in) throws IOException {

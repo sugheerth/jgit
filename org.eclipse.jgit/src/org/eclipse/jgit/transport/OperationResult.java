@@ -64,9 +64,11 @@ public abstract class OperationResult {
 
 	URIish uri;
 
-	final SortedMap<String, TrackingRefUpdate> updates = new TreeMap<String, TrackingRefUpdate>();
+	final SortedMap<String, TrackingRefUpdate> updates = new TreeMap<>();
 
 	StringBuilder messageBuffer;
+
+	String peerUserAgent;
 
 	/**
 	 * Get the URI this result came from.
@@ -153,7 +155,7 @@ public abstract class OperationResult {
 	 *         remote produced no additional messages.
 	 */
 	public String getMessages() {
-		return messageBuffer != null ? messageBuffer.toString() : "";
+		return messageBuffer != null ? messageBuffer.toString() : ""; //$NON-NLS-1$
 	}
 
 	void addMessages(final String msg) {
@@ -161,8 +163,19 @@ public abstract class OperationResult {
 			if (messageBuffer == null)
 				messageBuffer = new StringBuilder();
 			messageBuffer.append(msg);
-			if (!msg.endsWith("\n"))
+			if (!msg.endsWith("\n")) //$NON-NLS-1$
 				messageBuffer.append('\n');
 		}
+	}
+
+	/**
+	 * Get the user agent advertised by the peer server, if available.
+	 *
+	 * @return advertised user agent, e.g. {@code "JGit/4.0"}. Null if the peer
+	 *         did not advertise version information.
+	 * @since 4.0
+	 */
+	public String getPeerUserAgent() {
+		return peerUserAgent;
 	}
 }

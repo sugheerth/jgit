@@ -75,7 +75,7 @@ public class StrategySimpleTwoWayInCore extends ThreeWayMergeStrategy {
 
 	@Override
 	public String getName() {
-		return "simple-two-way-in-core";
+		return "simple-two-way-in-core"; //$NON-NLS-1$
 	}
 
 	@Override
@@ -106,7 +106,7 @@ public class StrategySimpleTwoWayInCore extends ThreeWayMergeStrategy {
 
 		InCoreMerger(final Repository local) {
 			super(local);
-			tw = new NameConflictTreeWalk(reader);
+			tw = new NameConflictTreeWalk(local, reader);
 			cache = DirCache.newInCore();
 		}
 

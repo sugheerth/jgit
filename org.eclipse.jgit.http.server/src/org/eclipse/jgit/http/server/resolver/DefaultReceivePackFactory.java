@@ -46,9 +46,9 @@ package org.eclipse.jgit.http.server.resolver;
 import javax.servlet.http.HttpServletRequest;
 
 import org.eclipse.jgit.lib.Config;
+import org.eclipse.jgit.lib.Config.SectionParser;
 import org.eclipse.jgit.lib.PersonIdent;
 import org.eclipse.jgit.lib.Repository;
-import org.eclipse.jgit.lib.Config.SectionParser;
 import org.eclipse.jgit.transport.ReceivePack;
 import org.eclipse.jgit.transport.resolver.ReceivePackFactory;
 import org.eclipse.jgit.transport.resolver.ServiceNotAuthorizedException;
@@ -69,6 +69,7 @@ import org.eclipse.jgit.transport.resolver.ServiceNotEnabledException;
 public class DefaultReceivePackFactory implements
 		ReceivePackFactory<HttpServletRequest> {
 	private static final SectionParser<ServiceConfig> CONFIG = new SectionParser<ServiceConfig>() {
+		@Override
 		public ServiceConfig parse(final Config cfg) {
 			return new ServiceConfig(cfg);
 		}
@@ -85,6 +86,7 @@ public class DefaultReceivePackFactory implements
 		}
 	}
 
+	@Override
 	public ReceivePack create(final HttpServletRequest req, final Repository db)
 			throws ServiceNotEnabledException, ServiceNotAuthorizedException {
 		final ServiceConfig cfg = db.getConfig().get(CONFIG);
@@ -104,7 +106,7 @@ public class DefaultReceivePackFactory implements
 		throw new ServiceNotAuthorizedException();
 	}
 
-	private ReceivePack createFor(final HttpServletRequest req,
+	private static ReceivePack createFor(final HttpServletRequest req,
 			final Repository db, final String user) {
 		final ReceivePack rp = new ReceivePack(db);
 		rp.setRefLogIdent(toPersonIdent(req, user));
